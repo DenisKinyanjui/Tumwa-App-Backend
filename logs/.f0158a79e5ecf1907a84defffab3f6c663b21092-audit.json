@@ -1,0 +1,25 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "C:\\Users\\Kinyanjui\\Bluetech Projects\\Tumwa\\tumwa-backend\\logs\\.f0158a79e5ecf1907a84defffab3f6c663b21092-audit.json",
+    "files": [
+        {
+            "date": 1776983445483,
+            "name": "C:\\Users\\Kinyanjui\\Bluetech Projects\\Tumwa\\tumwa-backend\\logs\\combined-2026-04-24.log",
+            "hash": "c0479a014bd00c1b46876f6899089ff5169affab0f3e24d85b1519f6202e9fbf"
+        },
+        {
+            "date": 1777501194132,
+            "name": "C:\\Users\\Kinyanjui\\Bluetech Projects\\Tumwa\\tumwa-backend\\logs\\combined-2026-04-30.log",
+            "hash": "771654c93cbc9167d090abdad8399ea348cc19b7954386e3ab1333a01de12edd"
+        },
+        {
+            "date": 1777719791991,
+            "name": "C:\\Users\\Kinyanjui\\Bluetech Projects\\Tumwa\\tumwa-backend\\logs\\combined-2026-05-02.log",
+            "hash": "58c90b33ad09cdec1fea91c8ebee3b5573e1c4d5d8cf1f0d2ef4f764b7af8e54"
+        }
+    ],
+    "hashType": "sha256"
+}

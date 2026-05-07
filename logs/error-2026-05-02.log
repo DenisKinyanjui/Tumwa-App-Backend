@@ -1,0 +1,2 @@
+{"error":"Request failed with status code 400","level":"error","message":"STK push error","service":"payment","timestamp":"2026-05-02 14:19:10","userId":"69f5dc97e595df02583e666f"}
+{"ip":"::ffff:192.168.100.4","level":"error","message":"POST /api/payments/initiate","method":"POST","responseTime":"2254ms","service":"http","statusCode":502,"timestamp":"2026-05-02 14:19:10","url":"/api/payments/initiate","userAgent":"okhttp/4.12.0","userId":"69f5dc97e595df02583e666f"}
