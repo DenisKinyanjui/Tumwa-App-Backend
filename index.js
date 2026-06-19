@@ -30,6 +30,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const walletRoutes = require('./routes/walletRoutes');
+const verificationRoutes = require('./routes/verificationRoutes');
 
 const { initSocket } = require('./socket/socketManager');
 
@@ -94,6 +95,7 @@ app.use('/api/errands', errandRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/disputes', disputeRoutes);
 app.use('/api/runners', runnerRoutes);
+app.use('/api/verification', verificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/notifications', notificationRoutes);
 

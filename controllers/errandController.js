@@ -66,8 +66,8 @@ exports.cancelErrand = async (req, res) => {
     return res.status(403).json({ status: 'fail', message: 'Access denied' });
   }
 
-  const cancellableByCustomer = ['pending', 'assigned'];
-  const cancellableByAdmin    = ['pending', 'assigned', 'in_progress'];
+  const cancellableByCustomer = ['pending', 'marketplace', 'assigned'];
+  const cancellableByAdmin    = ['pending', 'marketplace', 'assigned', 'in_progress'];
   const allowed = isAdmin ? cancellableByAdmin : cancellableByCustomer;
 
   if (!allowed.includes(errand.status)) {
@@ -163,7 +163,7 @@ exports.assignRunner = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Errand not found' });
     }
 
-    if (errand.status !== 'pending') {
+    if (!['pending', 'marketplace'].includes(errand.status)) {
       await session.abortTransaction();
       return res.status(400).json({
         status: 'fail',
@@ -464,7 +464,7 @@ exports.retryMatch = async (req, res) => {
   }
 
   const canRetry =
-    errand.status === 'pending' &&
+    ['pending', 'marketplace'].includes(errand.status) &&
     ['no_runner', 'searching', 'idle'].includes(errand.matchingState?.status);
 
   if (!canRetry) {
@@ -475,6 +475,7 @@ exports.retryMatch = async (req, res) => {
   }
 
   // Full reset: wipe tried-runners list so we get a fresh pool
+  // Also reset status from 'marketplace' back to 'pending' so matching runs again
   await Errand.findByIdAndUpdate(errand._id, {
     status:                           'pending',
     'matchingState.status':           'searching',
@@ -666,7 +667,7 @@ exports.adminAssignRunner = async (req, res) => {
   const errand = await Errand.findById(req.params.id);
   if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
 
-  if (!['pending', 'assigned'].includes(errand.status)) {
+  if (!['pending', 'marketplace', 'assigned'].includes(errand.status)) {
     return res.status(400).json({
       status: 'fail',
       message: `Cannot reassign an errand with status '${errand.status}'`,
@@ -711,7 +712,7 @@ exports.getErrands = async (req, res) => {
     const rLng   = runner.availability?.longitude;
 
     const errands = await populateErrand(
-      Errand.find({ status: 'pending' }).sort('-createdAt'),
+      Errand.find({ status: 'marketplace' }).sort('-createdAt'),
     );
 
     const withDistance = errands.map((e) => {

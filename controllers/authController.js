@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
+const termiiService = require('../services/termiiService');
 const { JWT, COOKIE } = require('../config/security');
 const logger = require('../utils/logger');
 
@@ -69,20 +70,33 @@ const sendAuthResponse = (res, statusCode, user, accessToken) => {
 
 exports.register = async (req, res) => {
   // Body already validated + stripped by Joi middleware
-  const { name, phone, password, role } = req.body;
+  const { name, email, phone, password, role } = req.body;
 
   const allowedRoles = ['customer', 'runner'];
   const assignedRole = allowedRoles.includes(role) ? role : 'customer';
 
-  const existingUser = await User.findOne({ phone });
-  if (existingUser) {
+  const existingPhone = await User.findOne({ phone });
+  if (existingPhone) {
     return res.status(409).json({
       status: 'fail',
       message: 'An account with this phone number already exists',
     });
   }
 
-  const user = await User.create({ name, phone, password, role: assignedRole });
+  if (email) {
+    const existingEmail = await User.findOne({ email });
+    if (existingEmail) {
+      return res.status(409).json({
+        status: 'fail',
+        message: 'An account with this email already exists',
+      });
+    }
+  }
+
+  const userData = { name, phone, password, role: assignedRole };
+  if (email) userData.email = email;
+
+  const user = await User.create(userData);
   const accessToken = signAccessToken(user._id, user.role);
   const refreshToken = await issueRefreshToken(user);
 
@@ -95,14 +109,17 @@ exports.register = async (req, res) => {
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
 
 exports.login = async (req, res) => {
-  const { phone, password } = req.body;
+  const { identifier, password } = req.body;
 
-  const user = await User.findOne({ phone }).select('+password');
+  const isEmail = identifier.includes('@');
+  const query = isEmail ? { email: identifier.toLowerCase() } : { phone: identifier };
+
+  const user = await User.findOne(query).select('+password');
   if (!user || !(await user.comparePassword(password))) {
-    logger.auth.warn('Failed login attempt', { phone, ip: req.ip });
+    logger.auth.warn('Failed login attempt', { identifier, ip: req.ip });
     return res.status(401).json({
       status: 'fail',
-      message: 'Invalid phone number or password',
+      message: isEmail ? 'Invalid email or password' : 'Invalid phone number or password',
     });
   }
 
@@ -210,6 +227,72 @@ exports.changePassword = async (req, res) => {
     message: 'Password changed successfully',
     accessToken,
   });
+};
+
+// ── POST /api/auth/send-otp ───────────────────────────────────────────────────
+// Public — called right after runner registration, before login.
+
+exports.sendOtp = async (req, res) => {
+  const { phone } = req.body;
+
+  const user = await User.findOne({ phone });
+  if (!user) {
+    return res.status(404).json({ status: 'fail', message: 'No account found with this phone number' });
+  }
+  if (user.phoneVerified) {
+    return res.status(400).json({ status: 'fail', message: 'Phone number is already verified' });
+  }
+
+  // TODO: restore Termii integration once sender ID is approved
+  // const pinId = await termiiService.sendOtp(phone);
+  // const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  // await User.findByIdAndUpdate(user._id, { otpPinId: pinId, otpPinExpiresAt: expiresAt });
+
+  // DEV BYPASS: mark a dummy pinId so verifyOtp knows an OTP was "sent"
+  await User.findByIdAndUpdate(user._id, {
+    otpPinId: 'dev-bypass',
+    otpPinExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+  });
+
+  logger.auth.info('OTP sent (dev bypass)', { userId: user._id, ip: req.ip });
+  res.status(200).json({ status: 'success', message: 'OTP sent to your phone number' });
+};
+
+// ── POST /api/auth/verify-otp ─────────────────────────────────────────────────
+
+exports.verifyOtp = async (req, res) => {
+  const { phone, otp } = req.body;
+
+  const user = await User.findOne({ phone }).select('+otpPinId +otpPinExpiresAt');
+  if (!user) {
+    return res.status(404).json({ status: 'fail', message: 'No account found with this phone number' });
+  }
+  if (user.phoneVerified) {
+    return res.status(400).json({ status: 'fail', message: 'Phone number is already verified' });
+  }
+  if (!user.otpPinId || !user.otpPinExpiresAt || user.otpPinExpiresAt < new Date()) {
+    return res.status(400).json({ status: 'fail', message: 'OTP has expired. Please request a new one.' });
+  }
+
+  // TODO: restore Termii verification once sender ID is approved
+  // const verified = await termiiService.verifyOtp(user.otpPinId, otp);
+  // if (!verified) {
+  //   return res.status(400).json({ status: 'fail', message: 'Invalid OTP. Please try again.' });
+  // }
+
+  // DEV BYPASS: accept any 6-digit code
+  if (!/^\d{6}$/.test(otp)) {
+    return res.status(400).json({ status: 'fail', message: 'Invalid OTP. Please try again.' });
+  }
+
+  await User.findByIdAndUpdate(user._id, {
+    phoneVerified: true,
+    otpPinId: null,
+    otpPinExpiresAt: null,
+  });
+
+  logger.auth.info('Phone verified', { userId: user._id, ip: req.ip });
+  res.status(200).json({ status: 'success', message: 'Phone number verified successfully' });
 };
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────

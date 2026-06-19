@@ -8,6 +8,8 @@ const { validate, schemas } = require('../middlewares/validator');
 // ── Public routes ─────────────────────────────────────────────────────────────
 router.post('/register', authLimiter, validate(schemas.register), authController.register);
 router.post('/login', authLimiter, validate(schemas.login), authController.login);
+router.post('/send-otp', authLimiter, validate(schemas.sendOtp), authController.sendOtp);
+router.post('/verify-otp', authLimiter, validate(schemas.verifyOtp), authController.verifyOtp);
 
 // ── Token rotation — requires valid refresh cookie ────────────────────────────
 router.post('/refresh', sensitiveOpLimiter, verifyRefreshToken, authController.refresh);

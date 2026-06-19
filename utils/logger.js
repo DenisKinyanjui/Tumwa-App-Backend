@@ -2,9 +2,15 @@ const { createLogger, format, transports } = require('winston');
 const path = require('path');
 const fs = require('fs');
 
+// Vercel (and other serverless platforms) ship a read-only filesystem outside
+// /tmp — file transports throw EROFS there, which becomes an uncaughtException
+// and kills the function on every invocation. Skip file logging in that case;
+// Vercel captures stdout/stderr automatically.
+const isServerless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
 // ── Ensure logs directory exists ──────────────────────────────────────────────
 const logsDir = path.join(process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+if (!isServerless && !fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
 // ── Log formats ───────────────────────────────────────────────────────────────
 
@@ -54,13 +60,20 @@ const buildFileTransport = (filename, level) => {
   }
 };
 
-const loggerTransports = [
-  buildFileTransport('combined', 'info'),
-  buildFileTransport('error', 'error'),
-];
+const loggerTransports = isServerless
+  ? []
+  : [buildFileTransport('combined', 'info'), buildFileTransport('error', 'error')];
 
 if (!isProduction) {
   loggerTransports.push(new transports.Console({ format: consoleFormat }));
+} else if (isServerless) {
+  // No file transport here — console is the only durable log sink Vercel captures.
+  loggerTransports.push(
+    new transports.Console({
+      level: process.env.LOG_LEVEL || 'info',
+      format: format.combine(format.timestamp(), format.json()),
+    })
+  );
 } else {
   // In production keep console output minimal (for systemd/pm2 journal capture)
   loggerTransports.push(

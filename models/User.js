@@ -10,6 +10,14 @@ const userSchema = new mongoose.Schema(
       minlength: [2, 'Name must be at least 2 characters'],
       maxlength: [100, 'Name cannot exceed 100 characters'],
     },
+    email: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      sparse: true,
+      match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email address'],
+    },
     phone: {
       type: String,
       required: [true, 'Phone number is required'],
@@ -123,6 +131,28 @@ const userSchema = new mongoose.Schema(
     // Set on logout — access tokens issued before this date are rejected.
     // Lightweight alternative to a token blacklist.
     lastLogoutAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+
+    // ── Phone verification (runners only) ──────────────────────────────────
+    phoneVerified: {
+      type: Boolean,
+      default: false,
+    },
+    verificationStatus: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected'],
+      default: 'none',
+    },
+    // Termii pinId stored here while OTP is in-flight; cleared on verify.
+    otpPinId: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    otpPinExpiresAt: {
       type: Date,
       default: null,
       select: false,

@@ -2,9 +2,12 @@ const mongoose = require('mongoose');
 
 /**
  * Status lifecycle:
- *   pending → assigned → in_progress → completed
- *                      ↘ cancelled (customer/admin)
- *                                   ↘ disputed  (customer/admin)
+ *   pending → assigned → in_progress → completed → confirmed
+ *          ↘ marketplace → assigned   ↘ cancelled
+ *                      ↘ cancelled             ↘ disputed
+ *
+ *   pending     — matching system is actively searching for a runner
+ *   marketplace — matching exhausted; errand visible in runner browse screen
  */
 const errandSchema = new mongoose.Schema(
   {
@@ -60,7 +63,7 @@ const errandSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: {
-        values: ['pending', 'assigned', 'in_progress', 'completed', 'confirmed', 'cancelled', 'disputed'],
+        values: ['pending', 'marketplace', 'assigned', 'in_progress', 'completed', 'confirmed', 'cancelled', 'disputed'],
         message: 'Invalid errand status',
       },
       default: 'pending',

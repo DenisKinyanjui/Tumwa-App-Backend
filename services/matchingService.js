@@ -343,18 +343,25 @@ const offerToRunner = async (errand, runner) => {
   // Emit offer to the runner
   getSocket().emitToUser(runner._id.toString(), 'errand:request', {
     errand: {
-      _id:         errand._id,
-      title:       errand.title,
-      description: errand.description,
-      location:    errand.location,
-      amount:      errand.amount,
-      distanceKm:  runner._distanceKm != null
-                     ? Math.round(runner._distanceKm * 10) / 10
-                     : null,
+      _id:              errand._id,
+      title:            errand.title,
+      description:      errand.description,
+      location:         errand.location,
+      amount:           errand.amount,
+      runnerCommission: errand.runnerCommission,
+      platformRunnerFee:errand.platformRunnerFee,
+      runnerReceives:   errand.runnerReceives,
+      trustHeld:        errand.trustHeld,
+      distanceKm:       runner._distanceKm != null
+                          ? Math.round(runner._distanceKm * 10) / 10
+                          : null,
     },
     expiresAt: expiresAt.toISOString(),
     timeoutMs: OFFER_TIMEOUT_MS,
   });
+
+  // Tell the customer someone is reviewing their errand
+  getSocket().emitRunnerOffered(errand.customer.toString(), errand._id);
 
   logger.info('Offer sent', {
     errandId: errand._id,
@@ -419,32 +426,45 @@ const handleOfferTimeout = async (errandId, runnerId) => {
 
 /**
  * Called when no eligible runner exists or all candidates were exhausted.
+ * Transitions the errand to 'marketplace' so it appears in the runner browse screen.
  */
 const handleNoRunner = async (errand) => {
   await Errand.findByIdAndUpdate(errand._id, {
-    'matchingState.status':             'no_runner',
+    status:                               'marketplace',
+    'matchingState.status':               'no_runner',
     'matchingState.currentOffer.runnerId':  null,
     'matchingState.currentOffer.offeredAt': null,
     'matchingState.currentOffer.expiresAt': null,
   });
 
-  getSocket().emitToUser(errand.customer.toString(), 'errand:no_runner', {
-    errandId: errand._id,
-    message:  'No runner available near you. You can retry or request a refund.',
+  // Notify customer + broadcast errand to all runners' browse screens
+  getSocket().emitMarketplaceFallback(errand.customer.toString(), {
+    _id:               errand._id,
+    title:             errand.title,
+    description:       errand.description,
+    location:          errand.location,
+    amount:            errand.amount,
+    runnerCommission:  errand.runnerCommission,
+    platformRunnerFee: errand.platformRunnerFee,
+    runnerReceives:    errand.runnerReceives,
+    trustHeld:         errand.trustHeld,
+    status:            'marketplace',
+    customer:          errand.customer,
+    createdAt:         errand.createdAt,
   });
 
   await notify.send({
     userId:       errand.customer,
-    title:        'No Runner Found',
-    message:      `We couldn't find a runner for "${errand.title}". Tap to retry or cancel for a refund.`,
+    title:        'Expanding Search',
+    message:      `No nearby runners for "${errand.title}". We've opened it to all runners in the marketplace.`,
     type:         'errand',
     relatedId:    errand._id,
     relatedModel: 'Errand',
-    eventName:    'errand-no-runner',
+    eventName:    'errand-marketplace',
     eventData:    { errandId: errand._id },
   });
 
-  logger.warn('No runner found', { errandId: errand._id });
+  logger.warn('No runner found — moved to marketplace', { errandId: errand._id });
 };
 
 // ── Exports ───────────────────────────────────────────────────────────────────

@@ -2,6 +2,10 @@ const User = require('../models/User');
 const Errand = require('../models/Errand');
 const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
+const Notification = require('../models/Notification');
+const Rating = require('../models/Rating');
+const RunnerVerification = require('../models/RunnerVerification');
+const logger = require('../utils/logger');
 const { creditFunds } = require('../utils/walletUtils');
 const { emitToUser, emitToRoom } = require('../socket/socketManager'); // kept for broadcast endpoint
 const { buildReport } = require('../services/adminReportService');
@@ -64,11 +68,8 @@ exports.getUser = async (req, res) => {
   const user = await User.findById(req.params.id).select('-password');
   if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
 
-  // Fetch recent activity for context
-  const [recentErrands, recentPayments] = await Promise.all([
-    Errand.find({
-      $or: [{ customer: user._id }, { runner: user._id }],
-    })
+  const [recentErrands, recentPayments, verification] = await Promise.all([
+    Errand.find({ $or: [{ customer: user._id }, { runner: user._id }] })
       .sort('-createdAt')
       .limit(5)
       .select('title status amount createdAt'),
@@ -77,17 +78,54 @@ exports.getUser = async (req, res) => {
       .sort('-createdAt')
       .limit(5)
       .select('type amount status completedAt'),
+
+    user.role === 'runner' ? RunnerVerification.findOne({ user: user._id }) : null,
   ]);
 
   res.status(200).json({
     status: 'success',
-    data: { user, recentErrands, recentPayments },
+    data: { user, recentErrands, recentPayments, verification },
   });
+};
+
+// PATCH /api/admin/verifications/:userId/approve
+exports.approveVerification = async (req, res) => {
+  const { notes } = req.body;
+  const verification = await RunnerVerification.findOneAndUpdate(
+    { user: req.params.userId },
+    { status: 'approved', adminNotes: notes || null, reviewedAt: new Date() },
+    { new: true },
+  );
+  if (!verification) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+
+  await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'approved' });
+
+  logger.info('Runner verification approved', { userId: req.params.userId, adminId: req.user._id });
+  res.status(200).json({ status: 'success', data: { verification } });
+};
+
+// PATCH /api/admin/verifications/:userId/reject
+exports.rejectVerification = async (req, res) => {
+  const { notes } = req.body;
+  if (!notes || !notes.trim()) {
+    return res.status(400).json({ status: 'fail', message: 'Admin notes are required when rejecting.' });
+  }
+  const verification = await RunnerVerification.findOneAndUpdate(
+    { user: req.params.userId },
+    { status: 'rejected', adminNotes: notes.trim(), reviewedAt: new Date() },
+    { new: true },
+  );
+  if (!verification) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+
+  await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'rejected' });
+
+  logger.info('Runner verification rejected', { userId: req.params.userId, adminId: req.user._id });
+  res.status(200).json({ status: 'success', data: { verification } });
 };
 
 // PATCH /api/admin/users/:id
 exports.updateUser = async (req, res) => {
-  const allowed = ['isActive', 'level'];
+  const allowed = ['isActive', 'level', 'name', 'phone', 'role', 'rating', 'cancelCount'];
   const updates = {};
   allowed.forEach((field) => {
     if (req.body[field] !== undefined) updates[field] = req.body[field];
@@ -122,6 +160,40 @@ exports.updateUser = async (req, res) => {
   }
 
   res.status(200).json({ status: 'success', data: { user } });
+};
+
+// DELETE /api/admin/users/:id
+// Permanently removes the user and all their associated data.
+// Admin accounts are protected and cannot be deleted.
+exports.deleteUser = async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
+
+  if (user.role === 'admin') {
+    return res.status(403).json({ status: 'fail', message: 'Admin accounts cannot be deleted' });
+  }
+
+  const userId = user._id;
+
+  await Promise.all([
+    Notification.deleteMany({ user: userId }),
+    Rating.deleteMany({ $or: [{ runner: userId }, { customer: userId }] }),
+    Errand.deleteMany({ $or: [{ customer: userId }, { runner: userId }] }),
+    Payment.deleteMany({ $or: [{ customer: userId }, { runner: userId }] }),
+    Dispute.deleteMany({ $or: [{ customer: userId }, { runner: userId }, { raisedBy: userId }] }),
+    RunnerVerification.deleteMany({ user: userId }),
+  ]);
+
+  await User.findByIdAndDelete(userId);
+
+  logger.info('User permanently deleted by admin', {
+    deletedUserId: userId,
+    deletedUserName: user.name,
+    adminId: req.user._id,
+    ip: req.ip,
+  });
+
+  res.status(200).json({ status: 'success', message: 'User and all associated data deleted permanently' });
 };
 
 // ── Errands ───────────────────────────────────────────────────────────────────

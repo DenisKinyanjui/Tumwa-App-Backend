@@ -12,6 +12,11 @@ router.use(restrictTo('admin'));
 router.get('/users', adminController.getUsers);
 router.get('/users/:id', adminController.getUser);
 router.patch('/users/:id', adminController.updateUser);
+router.delete('/users/:id', adminController.deleteUser);
+
+// ── Runner Verifications ──────────────────────────────────────────────────────
+router.patch('/verifications/:userId/approve', adminController.approveVerification);
+router.patch('/verifications/:userId/reject', adminController.rejectVerification);
 
 // ── Errands ───────────────────────────────────────────────────────────────────
 router.get('/errands', adminController.getErrands);

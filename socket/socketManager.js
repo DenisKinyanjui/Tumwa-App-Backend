@@ -291,6 +291,28 @@ const emitNoRunner = (customerId, errandId) => {
   });
 };
 
+/**
+ * Tell the customer an offer has been sent to a specific runner.
+ */
+const emitRunnerOffered = (customerId, errandId) => {
+  emitToUser(customerId.toString(), 'errand:offered', {
+    errandId,
+    message: 'A runner is reviewing your errand…',
+  });
+};
+
+/**
+ * Notify the customer the errand moved to marketplace, and broadcast it to
+ * all runners so their browse list updates in real-time.
+ */
+const emitMarketplaceFallback = (customerId, errand) => {
+  emitToUser(customerId.toString(), 'errand:marketplace', {
+    errandId: errand._id,
+    message:  'No runners found nearby. Your errand is now visible to all runners.',
+  });
+  emitToRoom('runners', 'errand:marketplace', { errand });
+};
+
 // ── Dispute helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -333,6 +355,8 @@ module.exports = {
   emitErrandExpired,
   emitSearching,
   emitNoRunner,
+  emitRunnerOffered,
+  emitMarketplaceFallback,
   emitDisputeCreated,
   emitDisputeUpdate,
   emitDisputeResolved,

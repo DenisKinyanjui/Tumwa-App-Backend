@@ -45,19 +45,35 @@ const fields = {
 
 const register = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
+  email: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).optional(),
   phone: fields.phone.required(),
   password: fields.password.required(),
   role: Joi.string().valid('customer', 'runner').default('customer'),
 });
 
 const login = Joi.object({
-  phone: fields.phone.required(),
+  identifier: Joi.string().trim().min(3).max(254).required().messages({
+    'any.required': 'Phone number or email is required',
+    'string.empty': 'Phone number or email is required',
+  }),
   password: Joi.string().required().messages({ 'any.required': 'Password is required' }),
 });
 
 const changePassword = Joi.object({
   currentPassword: Joi.string().required(),
   newPassword: fields.password.required(),
+});
+
+const sendOtp = Joi.object({
+  phone: fields.phone.required(),
+});
+
+const verifyOtp = Joi.object({
+  phone: fields.phone.required(),
+  otp: Joi.string().length(6).pattern(/^\d+$/).required().messages({
+    'string.length': 'OTP must be exactly 6 digits',
+    'string.pattern.base': 'OTP must contain only digits',
+  }),
 });
 
 // ── Errand schemas ────────────────────────────────────────────────────────────
@@ -202,6 +218,8 @@ module.exports = {
     register,
     login,
     changePassword,
+    sendOtp,
+    verifyOtp,
     // Errands
     createErrand,
     assignRunner,
