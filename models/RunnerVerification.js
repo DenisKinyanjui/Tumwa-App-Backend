@@ -15,15 +15,17 @@ const runnerVerificationSchema = new mongoose.Schema(
       minlength: [5, 'National ID must be at least 5 characters'],
       maxlength: [20, 'National ID cannot exceed 20 characters'],
     },
-    idFrontUrl: {
+    // R2 object keys — files are private; admin reads use a signed URL
+    // generated on demand (see utils/verificationPresign.js).
+    idFrontKey: {
       type: String,
       required: [true, 'ID front photo is required'],
     },
-    idBackUrl: {
+    idBackKey: {
       type: String,
       required: [true, 'ID back photo is required'],
     },
-    selfieUrl: {
+    selfieKey: {
       type: String,
       required: [true, 'Selfie photo is required'],
     },

@@ -3,6 +3,7 @@ const User = require('../models/User');
 const RunnerVerification = require('../models/RunnerVerification');
 const r2Service = require('../services/r2Service');
 const logger = require('../utils/logger');
+const notify = require('../services/notifyService');
 
 // ── Multer setup ──────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ exports.submit = async (req, res) => {
   // ── Upload images to R2 ───────────────────────────────────────────────────────
   const folder = `runner-verification/${user._id}`;
 
-  const [idFrontUrl, idBackUrl, selfieUrl] = await Promise.all([
+  const [idFrontKey, idBackKey, selfieKey] = await Promise.all([
     r2Service.uploadFile(files.idFront[0].buffer, folder, 'id-front', files.idFront[0].mimetype),
     r2Service.uploadFile(files.idBack[0].buffer, folder, 'id-back',  files.idBack[0].mimetype),
     r2Service.uploadFile(files.selfie[0].buffer, folder, 'selfie',   files.selfie[0].mimetype),
@@ -93,9 +94,9 @@ exports.submit = async (req, res) => {
     // Re-submission after rejection
     await RunnerVerification.findByIdAndUpdate(existing._id, {
       nationalId: nationalId.trim(),
-      idFrontUrl,
-      idBackUrl,
-      selfieUrl,
+      idFrontKey,
+      idBackKey,
+      selfieKey,
       meansOfTransport,
       areasOfOperation: areas,
       status: 'pending',
@@ -103,15 +104,38 @@ exports.submit = async (req, res) => {
       submittedAt: new Date(),
       reviewedAt: null,
     });
+
+    // Notify all admins so they know to review the updated documents
+    notify.sendToRole({
+      role: 'admin',
+      title: 'Verification Resubmitted',
+      message: `${user.name} has resubmitted their identity verification documents for review.`,
+      type: 'admin',
+      relatedId: user._id,
+      relatedModel: 'User',
+      eventName: 'verification-resubmitted',
+      eventData: { userId: String(user._id), userName: user.name },
+    });
   } else {
     await RunnerVerification.create({
       user: user._id,
       nationalId: nationalId.trim(),
-      idFrontUrl,
-      idBackUrl,
-      selfieUrl,
+      idFrontKey,
+      idBackKey,
+      selfieKey,
       meansOfTransport,
       areasOfOperation: areas,
+    });
+
+    notify.sendToRole({
+      role: 'admin',
+      title: 'New Verification Submitted',
+      message: `${user.name} has submitted their identity verification documents for review.`,
+      type: 'admin',
+      relatedId: user._id,
+      relatedModel: 'User',
+      eventName: 'verification-submitted',
+      eventData: { userId: String(user._id), userName: user.name },
     });
   }
 
@@ -122,5 +146,24 @@ exports.submit = async (req, res) => {
   res.status(201).json({
     status: 'success',
     message: 'Verification submitted successfully. We will review your documents within 24–48 hours.',
+  });
+};
+
+// ── GET /api/verification/status ──────────────────────────────────────────────
+// Protected — lets a logged-in runner check their own verification status
+// (and rejection reason, if any) so the app can prompt them to resubmit.
+exports.getMyStatus = async (req, res) => {
+  const verification = await RunnerVerification.findOne({ user: req.user._id })
+    .select('status adminNotes submittedAt reviewedAt')
+    .lean();
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      verificationStatus: req.user.verificationStatus,
+      adminNotes: verification?.adminNotes ?? null,
+      submittedAt: verification?.submittedAt ?? null,
+      reviewedAt: verification?.reviewedAt ?? null,
+    },
   });
 };

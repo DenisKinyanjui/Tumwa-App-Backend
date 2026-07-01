@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Errand = require('../models/Errand');
 const Payment = require('../models/Payment');
@@ -10,6 +11,7 @@ const { creditFunds } = require('../utils/walletUtils');
 const { emitToUser, emitToRoom } = require('../socket/socketManager'); // kept for broadcast endpoint
 const { buildReport } = require('../services/adminReportService');
 const notify = require('../services/notifyService');
+const { presignVerification } = require('../utils/verificationPresign');
 
 // ── Pagination helper ─────────────────────────────────────────────────────────
 const paginate = (query) => {
@@ -68,7 +70,7 @@ exports.getUser = async (req, res) => {
   const user = await User.findById(req.params.id).select('-password');
   if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
 
-  const [recentErrands, recentPayments, verification] = await Promise.all([
+  const [recentErrands, recentPayments, verificationDoc] = await Promise.all([
     Errand.find({ $or: [{ customer: user._id }, { runner: user._id }] })
       .sort('-createdAt')
       .limit(5)
@@ -79,8 +81,10 @@ exports.getUser = async (req, res) => {
       .limit(5)
       .select('type amount status completedAt'),
 
-    user.role === 'runner' ? RunnerVerification.findOne({ user: user._id }) : null,
+    user.role === 'runner' ? RunnerVerification.findOne({ user: user._id }).lean() : null,
   ]);
+
+  const verification = await presignVerification(verificationDoc);
 
   res.status(200).json({
     status: 'success',
@@ -88,17 +92,42 @@ exports.getUser = async (req, res) => {
   });
 };
 
+// GET /api/admin/verifications/:userId
+// Returns fresh presigned verification URLs for a single runner.
+// Used by the admin panel to refresh documents without reloading the full page.
+exports.getVerification = async (req, res) => {
+  const verificationDoc = await RunnerVerification.findOne({ user: req.params.userId }).lean();
+  if (!verificationDoc) {
+    return res.status(404).json({ status: 'fail', message: 'No verification submission found' });
+  }
+  const verification = await presignVerification(verificationDoc);
+  res.status(200).json({ status: 'success', data: { verification } });
+};
+
 // PATCH /api/admin/verifications/:userId/approve
 exports.approveVerification = async (req, res) => {
   const { notes } = req.body;
-  const verification = await RunnerVerification.findOneAndUpdate(
+  const verificationDoc = await RunnerVerification.findOneAndUpdate(
     { user: req.params.userId },
     { status: 'approved', adminNotes: notes || null, reviewedAt: new Date() },
     { new: true },
-  );
-  if (!verification) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+  ).lean();
+  if (!verificationDoc) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
 
   await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'approved' });
+
+  const verification = await presignVerification(verificationDoc);
+
+  notify.send({
+    userId: req.params.userId,
+    title: 'Verification Approved',
+    message: 'Your identity verification has been approved. You\'re all set to start accepting errands!',
+    type: 'admin',
+    relatedId: req.params.userId,
+    relatedModel: 'User',
+    eventName: 'verification-status-changed',
+    eventData: { status: 'approved' },
+  });
 
   logger.info('Runner verification approved', { userId: req.params.userId, adminId: req.user._id });
   res.status(200).json({ status: 'success', data: { verification } });
@@ -110,14 +139,27 @@ exports.rejectVerification = async (req, res) => {
   if (!notes || !notes.trim()) {
     return res.status(400).json({ status: 'fail', message: 'Admin notes are required when rejecting.' });
   }
-  const verification = await RunnerVerification.findOneAndUpdate(
+  const verificationDoc = await RunnerVerification.findOneAndUpdate(
     { user: req.params.userId },
     { status: 'rejected', adminNotes: notes.trim(), reviewedAt: new Date() },
     { new: true },
-  );
-  if (!verification) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+  ).lean();
+  if (!verificationDoc) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
 
   await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'rejected' });
+
+  const verification = await presignVerification(verificationDoc);
+
+  notify.send({
+    userId: req.params.userId,
+    title: 'Verification Rejected',
+    message: `Your identity verification was rejected: ${notes.trim()}. Please resubmit your documents to try again.`,
+    type: 'admin',
+    relatedId: req.params.userId,
+    relatedModel: 'User',
+    eventName: 'verification-status-changed',
+    eventData: { status: 'rejected', reason: notes.trim() },
+  });
 
   logger.info('Runner verification rejected', { userId: req.params.userId, adminId: req.user._id });
   res.status(200).json({ status: 'success', data: { verification } });
@@ -440,6 +482,63 @@ exports.getReports = async (req, res) => {
 
   const report = await buildReport(period);
   res.status(200).json({ status: 'success', data: { report } });
+};
+
+// ── System status ─────────────────────────────────────────────────────────────
+
+// A var counts as "configured" if it's set and isn't still the .env.example placeholder.
+const isConfigured = (...values) =>
+  values.every((v) => v && !/^your_/i.test(v));
+
+// GET /api/admin/system-status
+// Lightweight health snapshot for the admin dashboard — reflects real
+// connection state and credential presence, not synthetic data.
+exports.getSystemStatus = async (_req, res) => {
+  const mongoConnected = mongoose.connection.readyState === 1;
+
+  const services = [
+    {
+      key: 'app',
+      label: 'App Status',
+      operational: mongoConnected,
+      detail: mongoConnected ? 'All systems operational' : 'Database unavailable',
+    },
+    {
+      key: 'paymentGateway',
+      label: 'Payment Gateway',
+      operational: isConfigured(
+        process.env.MPESA_CONSUMER_KEY,
+        process.env.MPESA_CONSUMER_SECRET,
+        process.env.MPESA_SHORTCODE,
+        process.env.MPESA_PASSKEY,
+      ),
+      detail: 'M-Pesa Daraja API',
+    },
+    {
+      key: 'smsService',
+      label: 'SMS Service',
+      operational: isConfigured(process.env.TERMII_API_KEY),
+      detail: 'Termii OTP',
+    },
+    {
+      key: 'mapService',
+      label: 'Map Service',
+      operational: mongoConnected,
+      detail: 'Location matching',
+    },
+    {
+      key: 'pushNotifications',
+      label: 'Push Notifications',
+      operational: isConfigured(
+        process.env.FCM_PROJECT_ID,
+        process.env.FCM_CLIENT_EMAIL,
+        process.env.FCM_PRIVATE_KEY,
+      ),
+      detail: 'Firebase Cloud Messaging',
+    },
+  ];
+
+  res.status(200).json({ status: 'success', data: { services } });
 };
 
 // ── Broadcast ─────────────────────────────────────────────────────────────────

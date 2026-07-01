@@ -79,6 +79,10 @@ const getOverview = async (since, to) => {
               { $match: { createdAt: dateFilter } },
               { $group: { _id: '$role', count: { $sum: 1 } } },
             ],
+            verificationByStatus: [
+              { $match: { role: 'runner' } },
+              { $group: { _id: '$verificationStatus', count: { $sum: 1 } } },
+            ],
           },
         },
       ]),
@@ -193,6 +197,9 @@ const getOverview = async (since, to) => {
   );
   const totalUsers =
     (byRole.customer?.total ?? 0) + (byRole.runner?.total ?? 0);
+  const verificationByStatus = Object.fromEntries(
+    userStats[0].verificationByStatus.map((r) => [r._id ?? 'none', r.count])
+  );
 
   // ── Shape errand data ──────────────────────────────────────────────────────
   const errandOverall = errandStats[0].overall[0] ?? {
@@ -234,7 +241,15 @@ const getOverview = async (since, to) => {
     users: {
       total: totalUsers,
       customers: byRole.customer ?? { total: 0, active: 0 },
-      runners: byRole.runner ?? { total: 0, active: 0 },
+      runners: {
+        ...(byRole.runner ?? { total: 0, active: 0 }),
+        verification: {
+          pending: verificationByStatus.pending ?? 0,
+          approved: verificationByStatus.approved ?? 0,
+          rejected: verificationByStatus.rejected ?? 0,
+          none: verificationByStatus.none ?? 0,
+        },
+      },
       newInPeriod,
     },
     errands: {

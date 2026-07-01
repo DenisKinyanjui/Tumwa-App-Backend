@@ -15,6 +15,7 @@ router.patch('/users/:id', adminController.updateUser);
 router.delete('/users/:id', adminController.deleteUser);
 
 // ── Runner Verifications ──────────────────────────────────────────────────────
+router.get('/verifications/:userId', adminController.getVerification);
 router.patch('/verifications/:userId/approve', adminController.approveVerification);
 router.patch('/verifications/:userId/reject', adminController.rejectVerification);
 
@@ -36,6 +37,9 @@ router.get('/payments', adminController.getPayments);
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 router.get('/reports', adminController.getReports);
+
+// ── System status ─────────────────────────────────────────────────────────────
+router.get('/system-status', adminController.getSystemStatus);
 
 // ── Broadcast ─────────────────────────────────────────────────────────────────
 router.post('/broadcast', adminController.broadcast);
