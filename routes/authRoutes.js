@@ -8,6 +8,7 @@ const { validate, schemas } = require('../middlewares/validator');
 // ── Public routes ─────────────────────────────────────────────────────────────
 router.post('/register', authLimiter, validate(schemas.register), authController.register);
 router.post('/login', authLimiter, validate(schemas.login), authController.login);
+router.post('/google', authLimiter, validate(schemas.googleAuth), authController.googleAuth);
 router.post('/send-otp', authLimiter, validate(schemas.sendOtp), authController.sendOtp);
 router.post('/verify-otp', authLimiter, validate(schemas.verifyOtp), authController.verifyOtp);
 router.post(
@@ -31,6 +32,12 @@ router.use(protect);
 
 router.post('/logout', authController.logout);
 router.get('/me', authController.getMe);
+router.patch(
+  '/complete-phone',
+  sensitiveOpLimiter,
+  validate(schemas.completePhone),
+  authController.completePhone
+);
 router.patch(
   '/change-password',
   sensitiveOpLimiter,

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const disputeController = require('../controllers/disputeController');
+const legalController = require('../controllers/legalController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 
 // All admin routes require a valid JWT AND admin role
@@ -43,5 +44,9 @@ router.get('/system-status', adminController.getSystemStatus);
 
 // ── Broadcast ─────────────────────────────────────────────────────────────────
 router.post('/broadcast', adminController.broadcast);
+
+// ── Legal content ─────────────────────────────────────────────────────────────
+router.get('/legal/terms', legalController.getTerms);
+router.put('/legal/terms', legalController.updateTerms);
 
 module.exports = router;

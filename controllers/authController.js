@@ -1,11 +1,14 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const termiiService = require('../services/termiiService');
 const emailService = require('../services/emailService');
-const { JWT, COOKIE } = require('../config/security');
+const { JWT, COOKIE, GOOGLE } = require('../config/security');
 const logger = require('../utils/logger');
+
+const googleClient = new OAuth2Client();
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 
@@ -49,10 +52,11 @@ const clearRefreshCookie = (res) => {
   });
 };
 
-const sendAuthResponse = (res, statusCode, user, accessToken) => {
+const sendAuthResponse = (res, statusCode, user, accessToken, extra = {}) => {
   res.status(statusCode).json({
     status: 'success',
     accessToken,
+    ...extra,
     data: {
       user: {
         id: user._id,
@@ -138,6 +142,105 @@ exports.login = async (req, res) => {
 
   logger.auth.info('User logged in', { userId: user._id, role: user.role, ip: req.ip });
   sendAuthResponse(res, 200, user, accessToken);
+};
+
+// ── POST /api/auth/google ─────────────────────────────────────────────────────
+// Public. Verifies a Google ID token minted client-side (expo-auth-session),
+// then logs in the matching user or creates a new one. Google doesn't supply a
+// phone number, so new accounts are created without one — the client must
+// prompt for it afterwards (see completePhone below) before the user can post
+// or accept errands. New Google accounts default to the 'customer' role;
+// runners still go through the full phone/identity verification signup.
+
+exports.googleAuth = async (req, res) => {
+  const { idToken } = req.body;
+
+  let payload;
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE.CLIENT_IDS,
+    });
+    payload = ticket.getPayload();
+  } catch (err) {
+    logger.auth.warn('Invalid Google ID token', { ip: req.ip });
+    return res.status(401).json({ status: 'fail', message: 'Invalid Google sign-in token' });
+  }
+
+  if (!payload?.email || !payload.email_verified) {
+    return res.status(401).json({ status: 'fail', message: 'Google account email is not verified' });
+  }
+
+  let user = await User.findOne({ googleId: payload.sub });
+
+  if (!user) {
+    user = await User.findOne({ email: payload.email.toLowerCase() });
+    if (user) {
+      // Existing local account with the same email — link Google as a login method.
+      user.googleId = payload.sub;
+      await user.save();
+    }
+  }
+
+  if (!user) {
+    user = await User.create({
+      name: payload.name || payload.email.split('@')[0],
+      email: payload.email.toLowerCase(),
+      googleId: payload.sub,
+      role: 'customer',
+    });
+  }
+
+  if (!user.isActive) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'Your account has been deactivated. Contact support.',
+    });
+  }
+
+  const accessToken = signAccessToken(user._id, user.role);
+  const refreshToken = await issueRefreshToken(user);
+
+  setRefreshCookie(res, refreshToken);
+
+  logger.auth.info('User logged in via Google', { userId: user._id, ip: req.ip });
+  sendAuthResponse(res, 200, user, accessToken, { phoneRequired: !user.phone });
+};
+
+// ── PATCH /api/auth/complete-phone ────────────────────────────────────────────
+// Authenticated. Lets a Google sign-up (created without a phone) add one.
+// Does not mark the phone as verified — the client should follow up with the
+// existing send-otp/verify-otp flow if verification is required.
+
+exports.completePhone = async (req, res) => {
+  const { phone } = req.body;
+
+  const existing = await User.findOne({ phone });
+  if (existing && String(existing._id) !== String(req.user._id)) {
+    return res.status(409).json({
+      status: 'fail',
+      message: 'An account with this phone number already exists',
+    });
+  }
+
+  req.user.phone = phone;
+  await req.user.save();
+
+  logger.auth.info('Phone number added to account', { userId: req.user._id, ip: req.ip });
+  res.status(200).json({
+    status: 'success',
+    data: {
+      user: {
+        id: req.user._id,
+        name: req.user.name,
+        phone: req.user.phone,
+        role: req.user.role,
+        wallet: req.user.wallet,
+        level: req.user.level,
+        rating: req.user.rating,
+      },
+    },
+  });
 };
 
 // ── POST /api/auth/refresh ────────────────────────────────────────────────────

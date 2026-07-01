@@ -20,16 +20,24 @@ const userSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: [true, 'Phone number is required'],
+      // Google sign-ups don't provide a phone number — they complete it after first login.
+      required: [function () { return !this.googleId; }, 'Phone number is required'],
       unique: true,
+      sparse: true,
       trim: true,
       match: [/^\+?[1-9]\d{6,14}$/, 'Please provide a valid phone number'],
     },
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      // Google sign-ups authenticate via Google, not a local password.
+      required: [function () { return !this.googleId; }, 'Password is required'],
       minlength: [6, 'Password must be at least 6 characters'],
       select: false,
+    },
+    googleId: {
+      type: String,
+      unique: true,
+      sparse: true,
     },
     role: {
       type: String,

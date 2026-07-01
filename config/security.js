@@ -105,6 +105,17 @@ const CACHE_TTL = {
   REPORTS: 120,              // 2 minutes
 };
 
+// ── Google Sign-In ────────────────────────────────────────────────────────────
+// The ID token's `aud` claim matches whichever OAuth client ID issued it
+// (web, iOS, or Android) — all three must be listed here to be accepted.
+const GOOGLE = {
+  CLIENT_IDS: [
+    process.env.GOOGLE_WEB_CLIENT_ID,
+    process.env.GOOGLE_IOS_CLIENT_ID,
+    process.env.GOOGLE_ANDROID_CLIENT_ID,
+  ].filter(Boolean),
+};
+
 // ── Password policy ───────────────────────────────────────────────────────────
 const PASSWORD = {
   MIN_LENGTH: 8,
@@ -122,4 +133,5 @@ module.exports = {
   BODY_LIMITS,
   CACHE_TTL,
   PASSWORD,
+  GOOGLE,
 };

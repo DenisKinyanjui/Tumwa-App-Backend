@@ -89,6 +89,14 @@ const resetPassword = Joi.object({
   newPassword: fields.password.required(),
 });
 
+const googleAuth = Joi.object({
+  idToken: Joi.string().required(),
+});
+
+const completePhone = Joi.object({
+  phone: fields.phone.required(),
+});
+
 // ── Errand schemas ────────────────────────────────────────────────────────────
 
 const createErrand = Joi.object({
@@ -235,6 +243,8 @@ module.exports = {
     verifyOtp,
     forgotPassword,
     resetPassword,
+    googleAuth,
+    completePhone,
     // Errands
     createErrand,
     assignRunner,

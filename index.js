@@ -31,6 +31,7 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const verificationRoutes = require('./routes/verificationRoutes');
+const legalRoutes = require('./routes/legalRoutes');
 
 const { initSocket } = require('./socket/socketManager');
 
@@ -98,6 +99,7 @@ app.use('/api/runners', runnerRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/legal', legalRoutes);
 
 // Admin routes — stricter rate limiter applied on top
 app.use('/api/admin', adminLimiter, adminRoutes);
