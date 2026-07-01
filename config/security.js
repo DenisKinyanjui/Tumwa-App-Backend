@@ -48,6 +48,11 @@ const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000,  // 1 hour
     max: parseInt(process.env.RATE_LIMIT_SENSITIVE || '10', 10),
   },
+  // Strict: forgot-password / reset-password (unauthenticated, email-sending, brute-forceable)
+  PASSWORD_RESET: {
+    windowMs: 60 * 60 * 1000,  // 1 hour
+    max: parseInt(process.env.RATE_LIMIT_PASSWORD_RESET || '5', 10),
+  },
   // Payment initiation per user
   PAYMENT: {
     windowMs: 10 * 60 * 1000,  // 10 minutes

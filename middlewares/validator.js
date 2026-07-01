@@ -76,6 +76,19 @@ const verifyOtp = Joi.object({
   }),
 });
 
+const forgotPassword = Joi.object({
+  email: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).required(),
+});
+
+const resetPassword = Joi.object({
+  email: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).required(),
+  code: Joi.string().length(6).pattern(/^\d+$/).required().messages({
+    'string.length': 'Code must be exactly 6 digits',
+    'string.pattern.base': 'Code must contain only digits',
+  }),
+  newPassword: fields.password.required(),
+});
+
 // ── Errand schemas ────────────────────────────────────────────────────────────
 
 const createErrand = Joi.object({
@@ -220,6 +233,8 @@ module.exports = {
     changePassword,
     sendOtp,
     verifyOtp,
+    forgotPassword,
+    resetPassword,
     // Errands
     createErrand,
     assignRunner,

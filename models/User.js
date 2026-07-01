@@ -135,6 +135,17 @@ const userSchema = new mongoose.Schema(
       default: null,
       select: false,
     },
+    // Forgot-password reset code: stored as a bcrypt hash, cleared on use/expiry.
+    resetCodeHash: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    resetCodeExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
 
     // ── Phone verification (runners only) ──────────────────────────────────
     phoneVerified: {

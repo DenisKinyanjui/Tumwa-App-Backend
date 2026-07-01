@@ -8,6 +8,7 @@
  * Available limiters:
  *   authLimiter       — login / register (strict)
  *   sensitiveOpLimiter — refresh token / password change (very strict)
+ *   passwordResetLimiter — forgot-password / reset-password (very strict)
  *   apiLimiter        — general API routes
  *   paymentLimiter    — payment initiation (per user ID when authenticated)
  *   adminLimiter      — admin panel routes
@@ -85,6 +86,9 @@ const authLimiter = createLimiter(RATE_LIMITS.AUTH);
 // ── Sensitive operations (refresh token, password change) ─────────────────────
 const sensitiveOpLimiter = createLimiter(RATE_LIMITS.SENSITIVE);
 
+// ── Forgot-password / reset-password (unauthenticated, email-sending) ─────────
+const passwordResetLimiter = createLimiter(RATE_LIMITS.PASSWORD_RESET);
+
 // ── General API limiter ───────────────────────────────────────────────────────
 const apiLimiter = createLimiter(RATE_LIMITS.API);
 
@@ -101,6 +105,7 @@ const adminLimiter = createLimiter(RATE_LIMITS.ADMIN);
 module.exports = {
   authLimiter,
   sensitiveOpLimiter,
+  passwordResetLimiter,
   apiLimiter,
   paymentLimiter,
   adminLimiter,

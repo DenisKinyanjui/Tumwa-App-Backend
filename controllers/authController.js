@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
 const termiiService = require('../services/termiiService');
+const emailService = require('../services/emailService');
 const { JWT, COOKIE } = require('../config/security');
 const logger = require('../utils/logger');
 
@@ -293,6 +294,72 @@ exports.verifyOtp = async (req, res) => {
 
   logger.auth.info('Phone verified', { userId: user._id, ip: req.ip });
   res.status(200).json({ status: 'success', message: 'Phone number verified successfully' });
+};
+
+// ── POST /api/auth/forgot-password ────────────────────────────────────────────
+// Public. Always returns a generic response — never reveals whether the email
+// is registered (and accounts without an email on file get the same response).
+
+exports.forgotPassword = async (req, res) => {
+  const { email } = req.body;
+
+  const genericResponse = () =>
+    res.status(200).json({
+      status: 'success',
+      message: 'If an account with that email exists, a reset code has been sent.',
+    });
+
+  const user = await User.findOne({ email });
+  if (!user) return genericResponse();
+
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const resetCodeHash = await bcrypt.hash(code, 10);
+  const resetCodeExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+  await User.findByIdAndUpdate(user._id, { resetCodeHash, resetCodeExpiresAt });
+
+  try {
+    await emailService.sendPasswordResetEmail(email, code);
+    logger.auth.info('Password reset code sent', { userId: user._id, ip: req.ip });
+  } catch (err) {
+    logger.auth.error('Failed to send password reset email', { userId: user._id, ip: req.ip });
+  }
+
+  return genericResponse();
+};
+
+// ── POST /api/auth/reset-password ─────────────────────────────────────────────
+// Public. Verifies the emailed code and sets a new password.
+// Invalidates existing sessions, same as changePassword.
+
+exports.resetPassword = async (req, res) => {
+  const { email, code, newPassword } = req.body;
+
+  const user = await User.findOne({ email }).select('+resetCodeHash +resetCodeExpiresAt');
+  if (!user || !user.resetCodeHash || !user.resetCodeExpiresAt || user.resetCodeExpiresAt < new Date()) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Reset code has expired. Please request a new one.',
+    });
+  }
+
+  const isValidCode = await bcrypt.compare(code, user.resetCodeHash);
+  if (!isValidCode) {
+    return res.status(400).json({ status: 'fail', message: 'Invalid reset code. Please try again.' });
+  }
+
+  user.password = newPassword; // pre-save hook hashes it
+  user.passwordChangedAt = new Date();
+  user.resetCodeHash = null;
+  user.resetCodeExpiresAt = null;
+  user.refreshTokenHash = null;
+  user.refreshTokenExpiresAt = null;
+  user.lastLogoutAt = new Date();
+  await user.save();
+
+  logger.auth.info('Password reset via email code', { userId: user._id, ip: req.ip });
+
+  res.status(200).json({ status: 'success', message: 'Password reset successfully. Please log in.' });
 };
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
