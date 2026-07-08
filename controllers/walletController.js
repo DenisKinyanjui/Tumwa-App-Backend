@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const Errand = require('../models/Errand');
 const Payment = require('../models/Payment');
+const Dispute = require('../models/Dispute');
 const { creditEarnings } = require('../utils/walletUtils');
 const { initiateSTKPush, initiateB2C, normalizePhone } = require('../services/mpesaService');
 const logger = require('../utils/logger');
@@ -17,6 +18,30 @@ exports.getWallet = async (req, res) => {
     status: { $in: ['assigned', 'in_progress'] },
   });
 
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const [earningsAgg, withdrawnAgg] = await Promise.all([
+    Errand.aggregate([
+      { $match: { runner: req.user._id, isPaid: true, paidAt: { $gte: monthStart } } },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'],
+            },
+          },
+        },
+      },
+    ]),
+    Payment.aggregate([
+      { $match: { runner: req.user._id, type: 'withdrawal', status: 'completed', completedAt: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+  ]);
+
   const { floatBalance, heldFloat, earnings, trustBalance } = user.wallet;
   const availableFloat = Math.max(0, floatBalance - heldFloat);
   const withdrawable = availableFloat + earnings;
@@ -31,8 +56,76 @@ exports.getWallet = async (req, res) => {
       withdrawable,
       trustBalance,
       activeErrands,
+      monthlyEarnings: earningsAgg[0]?.total || 0,
+      monthlyWithdrawn: withdrawnAgg[0]?.total || 0,
     },
   });
+};
+
+// ── GET /api/wallet/transactions ──────────────────────────────────────────────
+exports.getTransactions = async (req, res) => {
+  const runnerId = req.user._id;
+
+  const [deposits, withdrawals, earnedErrands, penalizedDisputes] = await Promise.all([
+    Payment.find({ runner: runnerId, type: 'float_deposit', status: 'completed' })
+      .select('amount completedAt createdAt'),
+    Payment.find({ runner: runnerId, type: 'withdrawal', status: 'completed' })
+      .select('amount completedAt createdAt'),
+    Errand.find({ runner: runnerId, isPaid: true })
+      .select('amount runnerReceives ownMoneyUsed paidAt confirmedAt'),
+    Dispute.find({
+      runner: runnerId,
+      status: 'resolved',
+      'resolution.outcome': { $in: ['runner_at_fault', 'partial'] },
+    }).select('errand resolution'),
+  ]);
+
+  const shortCode = (id) => id.toString().slice(-6).toUpperCase();
+
+  const transactions = [
+    ...deposits.map((p) => ({
+      id: `deposit-${p._id}`,
+      type: 'topup',
+      title: 'Float top up',
+      subtitle: 'M-Pesa',
+      amount: p.amount,
+      direction: 'credit',
+      date: p.completedAt || p.createdAt,
+    })),
+    ...withdrawals.map((p) => ({
+      id: `withdrawal-${p._id}`,
+      type: 'withdrawal',
+      title: 'Withdrawal',
+      subtitle: 'M-Pesa',
+      amount: p.amount,
+      direction: 'debit',
+      date: p.completedAt || p.createdAt,
+    })),
+    ...earnedErrands.map((e) => ({
+      id: `earning-${e._id}`,
+      type: 'earning',
+      title: 'Payment received',
+      subtitle: `Errand #${shortCode(e._id)}`,
+      amount: e.ownMoneyUsed ? e.amount + e.runnerReceives : e.runnerReceives,
+      direction: 'credit',
+      date: e.paidAt || e.confirmedAt,
+    })),
+    ...penalizedDisputes.map((d) => ({
+      id: `dispute-${d._id}`,
+      type: 'payment',
+      title: 'Payment to customer',
+      subtitle: `Errand #${shortCode(d.errand)}`,
+      amount: d.resolution.outcome === 'runner_at_fault'
+        ? (d.resolution.refundAmount ?? d.resolution.penaltyAmount ?? 0)
+        : (d.resolution.penaltyAmount ?? 0),
+      direction: 'debit',
+      date: d.resolution.resolvedAt,
+    })),
+  ].filter((t) => t.date && t.amount > 0);
+
+  transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  return res.status(200).json({ status: 'success', data: transactions });
 };
 
 // ── POST /api/wallet/deposit-float ───────────────────────────────────────────
