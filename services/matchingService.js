@@ -226,7 +226,7 @@ const clearOfferTimeout = (errandId) => {
 /**
  * Query the DB for runners eligible to receive an offer for this errand.
  * Eligibility:
- *   - role === 'runner', isActive, availability.status === 'available'
+ *   - role === 'runner', isActive, verificationStatus === 'approved', availability.status === 'available'
  *   - cooldownUntil is null or in the past
  *   - (floatBalance − heldFloat) >= errand.amount  (spec requirement)
  *   - has reported a location AND is within MATCH_RADIUS_KM
@@ -254,6 +254,7 @@ const fetchEligibleRunners = async (errand) => {
   const runners = await User.find({
     role:     'runner',
     isActive: true,
+    verificationStatus: 'approved',
     'availability.status': 'available',
     $or: [
       { cooldownUntil: null },

@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const Errand = require('../models/Errand');
 const User = require('../models/User');
+const RunnerVerification = require('../models/RunnerVerification');
+const r2Service = require('../services/r2Service');
 const {
   calcFees,
   hasEnoughFloat,
@@ -24,6 +26,33 @@ const populateErrand = (query) =>
   query
     .populate('customer', 'name phone')
     .populate('runner', 'name phone rating wallet');
+
+// Attaches each runner's verification selfie as a short-lived signed URL
+// (runner.photoUrl) so the customer app can show it as a profile picture.
+// Only called for customer-facing responses — the selfie is otherwise a
+// private KYC document used solely for admin verification review.
+const attachRunnerPhotos = async (errands) => {
+  const runnerIds = [...new Set(
+    errands.filter((e) => e.runner).map((e) => e.runner._id.toString())
+  )];
+  if (runnerIds.length === 0) return errands;
+
+  const verifications = await RunnerVerification.find({ user: { $in: runnerIds } })
+    .select('user selfieKey')
+    .lean();
+
+  const photoUrlByRunner = new Map();
+  await Promise.all(verifications.map(async (v) => {
+    if (!v.selfieKey) return;
+    const url = await r2Service.getSignedDownloadUrl(v.selfieKey, 3600);
+    photoUrlByRunner.set(v.user.toString(), url);
+  }));
+
+  errands.forEach((e) => {
+    if (e.runner) e.runner.photoUrl = photoUrlByRunner.get(e.runner._id.toString()) || null;
+  });
+  return errands;
+};
 
 // ─── Customer ────────────────────────────────────────────────────────────────
 
@@ -178,6 +207,14 @@ exports.assignRunner = async (req, res) => {
 
     const runner = await User.findById(req.user._id).session(session);
 
+    if (runner.verificationStatus !== 'approved') {
+      await session.abortTransaction();
+      return res.status(403).json({
+        status: 'fail',
+        message: 'Your account must pass verification before you can accept errands',
+      });
+    }
+
     // Float check: zero float is allowed (own-money mode)
     const availableFloat = runner.wallet.floatBalance - runner.wallet.heldFloat;
     if (availableFloat < 0) {
@@ -270,6 +307,14 @@ exports.acceptErrand = async (req, res) => {
     }
 
     const runner = await User.findById(req.user._id).session(session);
+
+    if (runner.verificationStatus !== 'approved') {
+      await session.abortTransaction();
+      return res.status(403).json({
+        status: 'fail',
+        message: 'Your account must pass verification before you can accept errands',
+      });
+    }
 
     // Cooldown check — extra guard (matching service also checks, but belt-and-suspenders)
     if (runner.cooldownUntil && runner.cooldownUntil > new Date()) {
@@ -749,9 +794,14 @@ exports.getErrands = async (req, res) => {
     filter = { customer: req.user._id };
   }
 
-  const errands = await populateErrand(
+  const errandDocs = await populateErrand(
     Errand.find(filter).sort('-createdAt'),
   );
+
+  let errands = errandDocs;
+  if (req.user.role === 'customer') {
+    errands = await attachRunnerPhotos(errandDocs.map((e) => e.toObject()));
+  }
 
   res.status(200).json({ status: 'success', results: errands.length, data: { errands } });
 };
