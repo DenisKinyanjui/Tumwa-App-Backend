@@ -10,6 +10,12 @@ const logger = require('../utils/logger');
 
 const googleClient = new OAuth2Client();
 
+// The refresh token normally travels only as an httpOnly cookie (web/admin).
+// React Native doesn't reliably persist/resend httpOnly cookies, so mobile
+// clients flag themselves with this header to also receive it in the JSON
+// body, which they store and send back explicitly on refresh.
+const isMobileClient = (req) => req.headers['x-client-platform'] === 'mobile';
+
 // ── Token helpers ─────────────────────────────────────────────────────────────
 
 const signAccessToken = (userId, role) =>
@@ -108,7 +114,7 @@ exports.register = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User registered', { userId: user._id, role: user.role, ip: req.ip });
-  sendAuthResponse(res, 201, user, accessToken);
+  sendAuthResponse(res, 201, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
 };
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -141,7 +147,7 @@ exports.login = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User logged in', { userId: user._id, role: user.role, ip: req.ip });
-  sendAuthResponse(res, 200, user, accessToken);
+  sendAuthResponse(res, 200, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
 };
 
 // ── POST /api/auth/google ─────────────────────────────────────────────────────
@@ -204,7 +210,10 @@ exports.googleAuth = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User logged in via Google', { userId: user._id, ip: req.ip });
-  sendAuthResponse(res, 200, user, accessToken, { phoneRequired: !user.phone });
+  sendAuthResponse(res, 200, user, accessToken, {
+    phoneRequired: !user.phone,
+    ...(isMobileClient(req) ? { refreshToken } : {}),
+  });
 };
 
 // ── PATCH /api/auth/complete-phone ────────────────────────────────────────────
@@ -260,6 +269,7 @@ exports.refresh = async (req, res) => {
   res.status(200).json({
     status: 'success',
     accessToken,
+    ...(isMobileClient(req) ? { refreshToken: newRefreshToken } : {}),
   });
 };
 
@@ -330,6 +340,7 @@ exports.changePassword = async (req, res) => {
     status: 'success',
     message: 'Password changed successfully',
     accessToken,
+    ...(isMobileClient(req) ? { refreshToken } : {}),
   });
 };
 

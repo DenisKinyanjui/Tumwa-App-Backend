@@ -91,14 +91,17 @@ exports.restrictTo = (...roles) => {
 
 // ── verifyRefreshToken ────────────────────────────────────────────────────────
 // Used exclusively on POST /api/auth/refresh.
-// Reads the refresh token from the httpOnly cookie, verifies its signature,
-// then checks the hash stored in the DB matches (prevents reuse after rotation).
+// Reads the refresh token from the httpOnly cookie (web/admin), falling back
+// to the request body (mobile — React Native doesn't reliably persist/resend
+// httpOnly cookies, so it stores and sends the token explicitly instead).
+// Verifies its signature, then checks the hash stored in the DB matches
+// (prevents reuse after rotation).
 
 exports.verifyRefreshToken = async (req, res, next) => {
   const { COOKIE } = require('../config/security');
   const bcrypt = require('bcryptjs');
 
-  const token = req.cookies?.[COOKIE.REFRESH_NAME];
+  const token = req.cookies?.[COOKIE.REFRESH_NAME] || req.body?.refreshToken;
   if (!token) {
     return res.status(401).json({
       status: 'fail',
