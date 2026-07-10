@@ -73,7 +73,13 @@ const hasEnoughFloat = (runner, amount) => {
  * - If usable pool ≥ errand.amount  → floatUsed = true; auto-convert earnings → floatBalance if needed
  * - Otherwise                       → ownMoneyUsed = true (runner fronts cash)
  * - Lock errand.amount in heldFloat and add trustHeld to trustBalance.
- * - Returns { floatUsed, ownMoneyUsed }
+ *
+ * Runners can hold several concurrent errands — this only flips the runner to
+ * 'busy' (excluded from auto-matching) once their remaining available float
+ * can't cover another errand. Otherwise they're set back to 'available' so
+ * they keep receiving offers within their remaining float/range.
+ *
+ * Returns { floatUsed, ownMoneyUsed }
  */
 const acceptErrandWallet = async (runnerId, errand, session) => {
   const runner = await User.findById(runnerId).session(session);
@@ -95,7 +101,15 @@ const acceptErrandWallet = async (runnerId, errand, session) => {
     inc['wallet.heldFloat'] = errand.amount;
   }
 
-  await User.findByIdAndUpdate(runnerId, { $inc: inc }, { session, runValidators: true });
+  const opts = session ? { session, runValidators: true } : { runValidators: true };
+  await User.findByIdAndUpdate(runnerId, { $inc: inc }, opts);
+
+  const remainingFloat = floatUsed ? Math.max(0, availableFloat - errand.amount) : availableFloat;
+  await User.findByIdAndUpdate(
+    runnerId,
+    { 'availability.status': remainingFloat > 0 ? 'available' : 'busy' },
+    opts,
+  );
 
   return { floatUsed, ownMoneyUsed };
 };

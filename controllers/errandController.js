@@ -350,10 +350,8 @@ exports.acceptErrand = async (req, res) => {
     errand.matchingState.currentOffer.expiresAt  = null;
     await errand.save({ session });
 
-    // Mark runner busy
-    await User.findByIdAndUpdate(runner._id, {
-      'availability.status': 'busy',
-    }, { session });
+    // availability.status was already updated by acceptErrandWallet — 'busy'
+    // only if this errand exhausted the runner's remaining float.
 
     await session.commitTransaction();
 
@@ -728,7 +726,24 @@ exports.adminAssignRunner = async (req, res) => {
   // Reverse previous runner's wallet if reassigning
   const isReassignment = errand.runner && errand.runner.toString() !== runnerId;
   if (isReassignment && !errand.floatReleased) {
-    await cancelErrandWallet(errand.runner, errand);
+    const previousRunnerId = errand.runner;
+
+    await cancelErrandWallet(previousRunnerId, errand);
+    // Previous runner is no longer tied to this errand — free them up
+    await User.findByIdAndUpdate(previousRunnerId, {
+      'availability.status': 'available',
+    });
+
+    notify.send({
+      userId:       previousRunnerId,
+      title:        'Errand Reassigned',
+      message:      `You were unassigned from "${errand.title}" by an admin.`,
+      type:         'errand',
+      relatedId:    errand._id,
+      relatedModel: 'Errand',
+      eventName:    'errand-unassigned',
+      eventData:    { errandId: errand._id },
+    });
   }
 
   const { floatUsed, ownMoneyUsed } = await acceptErrandWallet(runner._id, errand);
@@ -740,10 +755,43 @@ exports.adminAssignRunner = async (req, res) => {
   errand.ownMoneyUsed = ownMoneyUsed;
   await errand.save();
 
+  // availability.status was already updated by acceptErrandWallet — 'busy'
+  // only if this errand exhausted the runner's remaining float.
+
+  const populated = await populateErrand(Errand.findById(errand._id));
+
+  emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+
+  notify.send({
+    userId:       errand.customer,
+    title:        'Runner Assigned',
+    message:      `${runner.name} has been assigned to "${errand.title}".`,
+    type:         'errand',
+    relatedId:    errand._id,
+    relatedModel: 'Errand',
+    eventName:    'errand-assigned',
+    eventData:    { errandId: errand._id, runner: { id: runner._id, name: runner.name } },
+  });
+
+  const floatMessage = ownMoneyUsed
+    ? `An admin assigned you to "${errand.title}" (own-money mode — no float held).`
+    : `An admin assigned you to "${errand.title}". KES ${errand.amount} float locked.`;
+
+  notify.send({
+    userId:       runner._id,
+    title:        'Errand Assigned',
+    message:      floatMessage,
+    type:         'errand',
+    relatedId:    errand._id,
+    relatedModel: 'Errand',
+    eventName:    'errand-assigned',
+    eventData:    { errandId: errand._id, floatUsed, ownMoneyUsed, trustHeld: errand.trustHeld },
+  });
+
   res.status(200).json({
     status:  'success',
     message: `Runner assigned by admin.`,
-    data:    { errand },
+    data:    { errand: populated },
   });
 };
 
