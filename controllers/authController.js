@@ -492,6 +492,7 @@ exports.getMe = async (req, res) => {
         rating: req.user.rating,
         completedErrands: req.user.completedErrands,
         isActive: req.user.isActive,
+        availability: req.user.availability && { status: req.user.availability.status },
       },
     },
   });
