@@ -69,6 +69,7 @@ const errandSchema = new mongoose.Schema(
       default: 'pending',
     },
     proofOfCompletion: { type: String, default: null },
+    proofPhotoKey: { type: String, default: null }, // R2 object key for the completion photo
     assignedAt:   { type: Date, default: null },
     startedAt:    { type: Date, default: null },
     completedAt:  { type: Date, default: null },

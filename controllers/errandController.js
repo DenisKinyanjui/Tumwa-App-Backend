@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const multer = require('multer');
 const Errand = require('../models/Errand');
 const User = require('../models/User');
 const RunnerVerification = require('../models/RunnerVerification');
@@ -53,6 +54,28 @@ const attachRunnerPhotos = async (errands) => {
   });
   return errands;
 };
+
+// Attaches a short-lived signed URL for the runner's proof-of-completion
+// photo (if one was uploaded) so the customer/runner apps can display it.
+const attachProofPhotoUrl = async (errand) => {
+  if (errand.proofPhotoKey) {
+    errand.proofPhotoUrl = await r2Service.getSignedDownloadUrl(errand.proofPhotoKey, 3600);
+  }
+  return errand;
+};
+
+// Single optional image upload for PATCH /errands/:id/complete
+const proofPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
+exports.uploadProofPhoto = proofPhotoUpload.single('proofPhoto');
 
 // ─── Customer ────────────────────────────────────────────────────────────────
 
@@ -598,12 +621,26 @@ exports.completeErrand = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'proofOfCompletion is required' });
   }
 
+  if (req.file) {
+    const key = await r2Service.uploadFile(
+      req.file.buffer,
+      `errand-proof/${errand._id}`,
+      'proof',
+      req.file.mimetype,
+    );
+    errand.proofPhotoKey = key;
+  }
+
   errand.status            = 'completed';
   errand.proofOfCompletion = proofOfCompletion;
   errand.completedAt       = new Date();
   await errand.save();
 
-  emitErrandUpdate(errand.toObject(), errand.customer, errand.runner);
+  const populated = await attachProofPhotoUrl(
+    (await populateErrand(Errand.findById(errand._id))).toObject(),
+  );
+
+  emitErrandUpdate(populated, errand.customer, errand.runner);
 
   notify.send({
     userId:       errand.customer,
@@ -619,7 +656,7 @@ exports.completeErrand = async (req, res) => {
   res.status(200).json({
     status:  'success',
     message: 'Errand marked as complete. Awaiting customer confirmation.',
-    data:    { errand },
+    data:    { errand: populated },
   });
 };
 
@@ -863,16 +900,18 @@ exports.getRunnerErrands = async (req, res) => {
 };
 
 exports.getErrand = async (req, res) => {
-  const errand = await populateErrand(Errand.findById(req.params.id));
+  const errandDoc = await populateErrand(Errand.findById(req.params.id));
 
-  if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
+  if (!errandDoc) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
 
   if (
     req.user.role === 'customer' &&
-    errand.customer._id.toString() !== req.user._id.toString()
+    errandDoc.customer._id.toString() !== req.user._id.toString()
   ) {
     return res.status(403).json({ status: 'fail', message: 'Access denied' });
   }
+
+  const errand = await attachProofPhotoUrl(errandDoc.toObject());
 
   res.status(200).json({ status: 'success', data: { errand } });
 };

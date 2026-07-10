@@ -25,7 +25,12 @@ router.patch('/:id/runner-cancel', restrictTo('runner'), errandController.runner
 // Legacy browse-and-accept flow (kept for backward compat / manual assignment)
 router.patch('/:id/assign',   restrictTo('runner'), errandController.assignRunner);
 router.patch('/:id/start',    restrictTo('runner'), errandController.startErrand);
-router.patch('/:id/complete', restrictTo('runner'), errandController.completeErrand);
+router.patch(
+  '/:id/complete',
+  restrictTo('runner'),
+  errandController.uploadProofPhoto,
+  errandController.completeErrand,
+);
 
 // ─── Customer re-match ────────────────────────────────────────────────────────
 router.post('/:id/retry-match', restrictTo('customer'), errandController.retryMatch);
