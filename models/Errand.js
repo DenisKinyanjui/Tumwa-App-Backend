@@ -39,6 +39,10 @@ const errandSchema = new mongoose.Schema(
         lat: { type: Number },
         lng: { type: Number },
       },
+      deliveryCoordinates: {
+        lat: { type: Number },
+        lng: { type: Number },
+      },
     },
     // ── Pricing ──────────────────────────────────────────────────────────────
     amount: {

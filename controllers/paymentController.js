@@ -282,7 +282,8 @@ exports.handleSTKCallback = async (req, res) => {
       location: {
         address:     errandData.location.address,
         // Pickup coordinates stored as the main point for proximity matching
-        coordinates: errandData.location.pickup ?? null,
+        coordinates:         errandData.location.pickup ?? null,
+        deliveryCoordinates: errandData.location.delivery ?? null,
       },
       amount:      errandData.amount,
       isPaid:      true,
