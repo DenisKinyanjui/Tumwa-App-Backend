@@ -6,9 +6,14 @@ const r2Service = require('../services/r2Service');
 const notify = require('../services/notifyService');
 const { emitChatMessage, emitChatRead } = require('../socket/socketManager');
 
+// conversation.customer/runner may be a raw ObjectId or a populated User
+// document (getConversationForErrand/getConversation populate them for the
+// header response) — normalize to the id string either way.
+const idOf = (ref) => (ref?._id ?? ref).toString();
+
 const isParticipant = (conversation, userId) =>
-  conversation.customer.toString() === userId.toString() ||
-  conversation.runner.toString() === userId.toString();
+  idOf(conversation.customer) === userId.toString() ||
+  idOf(conversation.runner) === userId.toString();
 
 // Resolves the counterpart's display info for the chat header: name, phone,
 // and (runner only) a signed selfie URL + verified badge — same derivation
