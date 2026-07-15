@@ -1,9 +1,16 @@
 const LegalContent = require('../models/LegalContent');
 const logger = require('../utils/logger');
 
+// A document created before `type` existed is the original terms doc.
+const findByType = (type) =>
+  LegalContent.findOne({ type }).sort({ createdAt: -1 })
+    .then((doc) => doc ?? (type === 'terms'
+      ? LegalContent.findOne({ type: { $exists: false } }).sort({ createdAt: -1 })
+      : null));
+
 // GET /api/legal/terms — public, used by the mobile app
 exports.getTerms = async (req, res) => {
-  const terms = await LegalContent.findOne().sort({ createdAt: -1 });
+  const terms = await findByType('terms');
 
   res.status(200).json({
     status: 'success',
@@ -11,6 +18,21 @@ exports.getTerms = async (req, res) => {
       content: terms?.content ?? '',
       version: terms?.version ?? 0,
       updatedAt: terms?.updatedAt ?? null,
+    },
+  });
+};
+
+// GET /api/legal/privacy — public, used by the mobile app
+exports.getPrivacyPolicy = async (req, res) => {
+  const privacy = await findByType('privacy');
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      content: privacy?.content ?? '',
+      sections: (privacy?.sections ?? []).slice().sort((a, b) => a.order - b.order),
+      version: privacy?.version ?? 0,
+      updatedAt: privacy?.updatedAt ?? null,
     },
   });
 };
@@ -23,7 +45,7 @@ exports.updateTerms = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'Content is required.' });
   }
 
-  let terms = await LegalContent.findOne().sort({ createdAt: -1 });
+  let terms = await findByType('terms');
 
   if (terms) {
     terms.content = content;

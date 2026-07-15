@@ -32,8 +32,13 @@ const reportRoutes = require('./routes/reportRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const verificationRoutes = require('./routes/verificationRoutes');
 const legalRoutes = require('./routes/legalRoutes');
+const profileRoutes = require('./routes/profileRoutes');
+const addressRoutes = require('./routes/addressRoutes');
+const favoriteRoutes = require('./routes/favoriteRoutes');
+const conversationRoutes = require('./routes/conversationRoutes');
 
 const { initSocket } = require('./socket/socketManager');
+const { sweepExpiredReadonly } = require('./services/conversationService');
 
 // ── App setup ─────────────────────────────────────────────────────────────────
 const app = express();
@@ -100,6 +105,10 @@ app.use('/api/verification', verificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/legal', legalRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/addresses', addressRoutes);
+app.use('/api/favorites', favoriteRoutes);
+app.use('/api/conversations', conversationRoutes);
 
 // Admin routes — stricter rate limiter applied on top
 app.use('/api/admin', adminLimiter, adminRoutes);
@@ -139,6 +148,12 @@ app.use((err, req, _res, _next) => {
 // ── Startup ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
+// Auto-archives cancelled conversations whose 30-day read-only window has
+// elapsed. No cron library exists in this backend — a plain interval matches
+// the codebase's existing on-demand/setImmediate scheduling style.
+let readonlySweepInterval = null;
+const READONLY_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
+
 const start = async () => {
   try {
     // Connect MongoDB
@@ -150,6 +165,9 @@ const start = async () => {
 
     // Initialise Socket.io on the shared HTTP server
     initSocket(httpServer);
+
+    // Start the read-only-conversation sweep (see declaration above)
+    readonlySweepInterval = setInterval(sweepExpiredReadonly, READONLY_SWEEP_INTERVAL_MS);
 
     httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`, {
@@ -172,6 +190,8 @@ const shutdown = async (signal) => {
   isShuttingDown = true;
 
   logger.info(`${signal} received — graceful shutdown started`);
+
+  if (readonlySweepInterval) clearInterval(readonlySweepInterval);
 
   // Stop accepting new connections
   httpServer.close(async () => {

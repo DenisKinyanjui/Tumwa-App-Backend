@@ -8,6 +8,7 @@ router.use(protect);
 // ─── Shared ──────────────────────────────────────────────────────────────────
 router.get('/', errandController.getErrands);
 router.get('/runner/mine', restrictTo('runner'), errandController.getRunnerErrands);
+router.get('/customer/stats', restrictTo('customer'), errandController.getMyErrandStats);
 router.get('/:id', errandController.getErrand);
 
 // ─── Customer ────────────────────────────────────────────────────────────────

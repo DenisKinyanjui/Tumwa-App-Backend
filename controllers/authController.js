@@ -67,6 +67,7 @@ const sendAuthResponse = (res, statusCode, user, accessToken, extra = {}) => {
       user: {
         id: user._id,
         name: user.name,
+        email: user.email,
         phone: user.phone,
         role: user.role,
         wallet: user.wallet,
@@ -242,6 +243,7 @@ exports.completePhone = async (req, res) => {
       user: {
         id: req.user._id,
         name: req.user.name,
+        email: req.user.email,
         phone: req.user.phone,
         role: req.user.role,
         wallet: req.user.wallet,
@@ -485,6 +487,7 @@ exports.getMe = async (req, res) => {
       user: {
         id: req.user._id,
         name: req.user.name,
+        email: req.user.email,
         phone: req.user.phone,
         role: req.user.role,
         wallet: req.user.wallet,
@@ -493,6 +496,11 @@ exports.getMe = async (req, res) => {
         completedErrands: req.user.completedErrands,
         isActive: req.user.isActive,
         availability: req.user.availability && { status: req.user.availability.status },
+        dateOfBirth: req.user.dateOfBirth,
+        gender: req.user.gender,
+        vehicleInfo: req.user.vehicleInfo,
+        payoutDetails: req.user.payoutDetails,
+        payoutMpesaNumber: req.user.payoutMpesaNumber,
       },
     },
   });

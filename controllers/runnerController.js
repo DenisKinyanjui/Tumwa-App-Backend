@@ -154,6 +154,20 @@ exports.getRunnerRating = async (req, res) => {
     .populate('customer', 'name')
     .populate('errand', 'title');
 
+  // Star breakdown (1-5) for the ratings & reviews screen
+  const distAgg = await Rating.aggregate([
+    { $match: { runner: runner._id } },
+    { $group: { _id: '$stars', count: { $sum: 1 } } },
+  ]);
+  const distCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  distAgg.forEach((d) => { distCounts[d._id] = d.count; });
+  const totalRatings = Object.values(distCounts).reduce((a, b) => a + b, 0);
+  const distribution = [5, 4, 3, 2, 1].map((stars) => ({
+    stars,
+    count: distCounts[stars],
+    percentage: totalRatings ? Math.round((distCounts[stars] / totalRatings) * 100) : 0,
+  }));
+
   const levelConfig = getLevelConfig(runner.level);
 
   res.status(200).json({
@@ -169,6 +183,8 @@ exports.getRunnerRating = async (req, res) => {
         levelLabel: levelConfig.label,
       },
       recentRatings,
+      distribution,
+      totalRatings,
     },
   });
 };
@@ -196,6 +212,87 @@ exports.getRunnerLevel = async (req, res) => {
         level: runner.level,
       },
       ...progress,
+    },
+  });
+};
+
+// ─── GET /api/runners/performance?range=week|month|year ─────────────────────
+// Runner-facing Performance screen: stat grid + earnings sparkline for range.
+
+const rangeStart = (range) => {
+  const now = new Date();
+  if (range === 'year') {
+    return new Date(now.getFullYear(), 0, 1);
+  }
+  if (range === 'month') {
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+  // week — Monday 00:00 of the current week
+  const day = now.getDay(); // 0 = Sunday
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - diffToMonday);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+};
+
+exports.getPerformance = async (req, res) => {
+  const range = ['week', 'month', 'year'].includes(req.query.range) ? req.query.range : 'week';
+  const since = rangeStart(range);
+
+  const [countsAgg, earningsAgg, sparklineAgg] = await Promise.all([
+    Errand.aggregate([
+      { $match: { runner: req.user._id, createdAt: { $gte: since } } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          completed: { $sum: { $cond: [{ $in: ['$status', ['completed', 'confirmed']] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+        },
+      },
+    ]),
+    Errand.aggregate([
+      { $match: { runner: req.user._id, isPaid: true, paidAt: { $gte: since } } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: { $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'] } },
+        },
+      },
+    ]),
+    Errand.aggregate([
+      { $match: { runner: req.user._id, isPaid: true, paidAt: { $gte: since } } },
+      {
+        $group: {
+          _id: range === 'year'
+            ? { $month: '$paidAt' }
+            : { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
+          total: { $sum: { $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+  ]);
+
+  const total = countsAgg[0]?.total || 0;
+  const completed = countsAgg[0]?.completed || 0;
+  const cancelled = countsAgg[0]?.cancelled || 0;
+  const completionRate = total ? Math.round((completed / total) * 100) : 0;
+  const earnings = earningsAgg[0]?.total || 0;
+  const sparkline = sparklineAgg.map((p) => p.total);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      range,
+      totalErrands: total,
+      completed,
+      cancelled,
+      completionRate,
+      earnings,
+      rating: req.user.rating,
+      sparkline: sparkline.length ? sparkline : [0, 0],
     },
   });
 };

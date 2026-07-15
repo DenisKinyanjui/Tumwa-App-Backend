@@ -163,6 +163,63 @@ const rateRunner = Joi.object({
   comment: Joi.string().trim().max(500).optional(),
 });
 
+// ── Profile schemas ───────────────────────────────────────────────────────────
+
+const updatePersonalInfo = Joi.object({
+  name: Joi.string().trim().min(2).max(100).optional(),
+  email: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).optional(),
+  dateOfBirth: Joi.date().max('now').optional(),
+  gender: Joi.string().valid('female', 'male', 'other').optional(),
+}).min(1);
+
+const updateVehicleInfo = Joi.object({
+  vehicleInfo: Joi.object({
+    type: Joi.string().trim().max(50).allow(null, ''),
+    make: Joi.string().trim().max(50).allow(null, ''),
+    model: Joi.string().trim().max(50).allow(null, ''),
+    year: Joi.string().trim().max(4).allow(null, ''),
+    licensePlate: Joi.string().trim().max(20).allow(null, ''),
+    color: Joi.string().trim().max(30).allow(null, ''),
+    registrationNumber: Joi.string().trim().max(30).allow(null, ''),
+  }).required(),
+});
+
+const updatePayoutDetails = Joi.object({
+  payoutDetails: Joi.object({
+    method: Joi.string().valid('mpesa', 'bank').required(),
+    mpesaNumber: fields.phone.allow(null, '').optional(),
+    bankName: Joi.string().trim().max(100).allow(null, ''),
+    bankAccountNumber: Joi.string().trim().max(50).allow(null, ''),
+    bankAccountName: Joi.string().trim().max(100).allow(null, ''),
+  }).required(),
+});
+
+const updatePaymentMethod = Joi.object({
+  mpesaNumber: fields.phone.required(),
+});
+
+// ── Saved address schemas ─────────────────────────────────────────────────────
+
+const coordinates = Joi.object({
+  lat: Joi.number().min(-90).max(90),
+  lng: Joi.number().min(-180).max(180),
+});
+
+const createAddress = Joi.object({
+  label: Joi.string().trim().min(1).max(50).required(),
+  address: Joi.string().trim().min(3).max(300).required(),
+  coordinates: coordinates.optional(),
+  tag: Joi.string().valid('Home', 'Work', 'Other').default('Other'),
+});
+
+const updateAddress = Joi.object({
+  label: Joi.string().trim().min(1).max(50).optional(),
+  address: Joi.string().trim().min(3).max(300).optional(),
+  coordinates: coordinates.optional(),
+  tag: Joi.string().valid('Home', 'Work', 'Other').optional(),
+  isFavorite: Joi.boolean().optional(),
+}).min(1);
+
 // ── Admin schemas ─────────────────────────────────────────────────────────────
 
 const adjustWallet = Joi.object({
@@ -259,6 +316,14 @@ module.exports = {
     initiateWithdrawal,
     // Runner
     rateRunner,
+    // Profile
+    updatePersonalInfo,
+    updateVehicleInfo,
+    updatePayoutDetails,
+    updatePaymentMethod,
+    // Saved addresses
+    createAddress,
+    updateAddress,
     // Admin
     adjustWallet,
     adminUpdateUser,

@@ -155,6 +155,37 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
 
+    // ── Extended profile (Edit Profile screen) ─────────────────────────────
+    dateOfBirth: { type: Date, default: null },
+    gender: {
+      type: String,
+      enum: ['female', 'male', 'other'],
+      default: null,
+    },
+
+    // ── Vehicle info (runners only) ─────────────────────────────────────────
+    vehicleInfo: {
+      type: { type: String, default: null },
+      make: { type: String, default: null },
+      model: { type: String, default: null },
+      year: { type: String, default: null },
+      licensePlate: { type: String, default: null },
+      color: { type: String, default: null },
+      registrationNumber: { type: String, default: null },
+    },
+
+    // ── Payout details (runners only) ────────────────────────────────────────
+    payoutDetails: {
+      method: { type: String, enum: ['mpesa', 'bank'], default: 'mpesa' },
+      mpesaNumber: { type: String, default: null },
+      bankName: { type: String, default: null },
+      bankAccountNumber: { type: String, default: null },
+      bankAccountName: { type: String, default: null },
+    },
+
+    // ── Payment methods (customers only) — M-Pesa number for refunds/payouts ──
+    payoutMpesaNumber: { type: String, default: null },
+
     // ── Phone verification (runners only) ──────────────────────────────────
     phoneVerified: {
       type: Boolean,

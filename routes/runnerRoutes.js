@@ -5,6 +5,9 @@ const { protect, restrictTo } = require('../middleware/authMiddleware');
 
 router.use(protect);
 
+// Runner's own performance dashboard (range-scoped stats + earnings sparkline)
+router.get('/performance', restrictTo('runner'), runnerController.getPerformance);
+
 // Any authenticated user can view a runner's rating and level
 router.get('/:id/rating', runnerController.getRunnerRating);
 router.get('/:id/level', runnerController.getRunnerLevel);

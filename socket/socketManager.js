@@ -1,6 +1,7 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Conversation = require('../models/Conversation');
 const logger = require('../utils/logger');
 const { isWithinRadius } = require('../utils/distanceCalculator');
 
@@ -20,6 +21,10 @@ let io;
  *   wallet:update   → user:{runnerId}   (balance changed — client should refetch)
  *   payment:success → user:{customerId} (STK confirmed, errand created)
  *   payment:failed  → user:{customerId} (STK failed)
+ *   chat:message    → user:{customerId} + user:{runnerId}  (new message in their conversation)
+ *   chat:read       → user:{otherParticipantId}  (their message was read)
+ *   chat:typing     → errand:{errandId} room  (broadcast, ephemeral)
+ *   chat:presence   → user:{otherParticipantId} (join/leave online-state changes)
  */
 
 const initSocket = (httpServer) => {
@@ -143,6 +148,55 @@ const initSocket = (httpServer) => {
       socket.leave(`errand:${errandId}`);
     });
 
+    // ── Chat ──────────────────────────────────────────────────────────────────
+    // Joins the same errand:{id} room used for GPS tracking, but kept as a
+    // separate event pair so chat-only behavior (typing/presence) doesn't
+    // get tangled with the tracking code path above.
+    socket.on('chat:watch', async ({ errandId }) => {
+      if (!errandId) return;
+      try {
+        const conversation = await Conversation.findOne({
+          errand: errandId,
+          status: { $ne: 'archived' },
+        }).select('customer runner');
+        if (!conversation) return;
+
+        const isParticipant =
+          conversation.customer.toString() === _id.toString() ||
+          conversation.runner.toString() === _id.toString();
+        if (!isParticipant) return;
+
+        socket.join(`errand:${errandId}`);
+        socket.data.watchingChatFor = errandId;
+
+        const otherId = (
+          conversation.customer.toString() === _id.toString()
+            ? conversation.runner
+            : conversation.customer
+        ).toString();
+        const otherRoom = io.sockets.adapter.rooms.get(`user:${otherId}`);
+        socket.emit('chat:presence', { userId: otherId, online: !!(otherRoom && otherRoom.size > 0) });
+      } catch (err) {
+        logger.error('[Socket] chat:watch failed', { error: err.message });
+      }
+    });
+
+    socket.on('chat:unwatch', ({ errandId }) => {
+      if (!errandId) return;
+      socket.leave(`errand:${errandId}`);
+      if (socket.data.watchingChatFor === errandId) socket.data.watchingChatFor = null;
+    });
+
+    // Ephemeral only — no persistence, no offline-delivery guarantee needed.
+    socket.on('chat:typing', ({ errandId, isTyping }) => {
+      if (!errandId) return;
+      socket.to(`errand:${errandId}`).emit('chat:typing', {
+        errandId,
+        userId: _id,
+        isTyping: !!isTyping,
+      });
+    });
+
     socket.on('disconnect', (reason) => {
       logger.info(`[Socket] disconnected | ${name} (${role}) | reason: ${reason}`);
       // Mark runner offline so they are excluded from future matching queries
@@ -153,6 +207,32 @@ const initSocket = (httpServer) => {
         }).catch((err) =>
           logger.error('[Socket] disconnect: runner offline update failed', { error: err.message }),
         );
+      }
+
+      // Tell the other chat participant we've gone offline (single-instance only —
+      // presence is derived from live connection state, not persisted).
+      if (socket.data.watchingChatFor) {
+        Conversation.findOne({
+          errand: socket.data.watchingChatFor,
+          status: { $ne: 'archived' },
+        })
+          .select('customer runner')
+          .then((conversation) => {
+            if (!conversation) return;
+            const otherId = (
+              conversation.customer.toString() === _id.toString()
+                ? conversation.runner
+                : conversation.customer
+            ).toString();
+            emitToUser(otherId, 'chat:presence', {
+              userId: _id.toString(),
+              online: false,
+              lastSeenAt: new Date(),
+            });
+          })
+          .catch((err) =>
+            logger.error('[Socket] disconnect: chat presence update failed', { error: err.message }),
+          );
       }
     });
 
@@ -342,6 +422,28 @@ const emitDisputeResolved = (customerId, runnerId, payload) => {
   if (runnerId)   emitToUser(runnerId.toString(),  'dispute:resolved', data);
 };
 
+// ── Chat helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Emit a new chat message to both participants' personal rooms — targeted
+ * (not room-broadcast) so delivery works even if the recipient hasn't
+ * opened the Chat screen.
+ */
+const emitChatMessage = (conversation, message) => {
+  const payload = { conversationId: conversation._id, errandId: conversation.errand, message };
+  emitToUser(conversation.customer.toString(), 'chat:message', payload);
+  emitToUser(conversation.runner.toString(), 'chat:message', payload);
+};
+
+/**
+ * Emit a read receipt to the participant who did NOT just mark messages read.
+ */
+const emitChatRead = (conversation, { readerId, readAt }) => {
+  const isReaderCustomer = conversation.customer.toString() === readerId.toString();
+  const otherId = isReaderCustomer ? conversation.runner : conversation.customer;
+  emitToUser(otherId.toString(), 'chat:read', { conversationId: conversation._id, readerId, readAt });
+};
+
 module.exports = {
   initSocket,
   getIO,
@@ -360,4 +462,6 @@ module.exports = {
   emitDisputeCreated,
   emitDisputeUpdate,
   emitDisputeResolved,
+  emitChatMessage,
+  emitChatRead,
 };

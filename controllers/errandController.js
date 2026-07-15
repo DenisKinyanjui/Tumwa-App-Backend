@@ -22,6 +22,7 @@ const {
 } = require('../services/matchingService');
 const { emitToNearbyRunners, emitErrandUpdate, emitWalletUpdate } = require('../socket/socketManager');
 const notify = require('../services/notifyService');
+const conversationService = require('../services/conversationService');
 
 const populateErrand = (query) =>
   query
@@ -137,6 +138,11 @@ exports.cancelErrand = async (req, res) => {
   errand.status      = 'cancelled';
   errand.cancelledAt = new Date();
   await errand.save();
+
+  conversationService.setReadonly(errand._id, {
+    reason: 'cancelled',
+    until: conversationService.thirtyDaysFromNow(),
+  });
 
   if (errand.runner) {
     notify.send({
@@ -260,6 +266,7 @@ exports.assignRunner = async (req, res) => {
     const populated = await populateErrand(Errand.findById(errand._id));
 
     emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+    conversationService.getOrCreateForErrand(populated);
 
     notify.send({
       userId:       errand.customer,
@@ -384,6 +391,7 @@ exports.acceptErrand = async (req, res) => {
     const populated = await populateErrand(Errand.findById(errand._id));
 
     emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+    conversationService.getOrCreateForErrand(populated);
 
     notify.send({
       userId:       errand.customer,
@@ -502,6 +510,8 @@ exports.runnerCancelErrand = async (req, res) => {
     await errand.save({ session });
 
     await session.commitTransaction();
+
+    conversationService.archiveForErrand(errand._id);
 
     // Apply penalties + notify customer + restart matching (all outside the transaction)
     setImmediate(() => handleRunnerCancellation(errand, req.user._id.toString()));
@@ -636,6 +646,8 @@ exports.completeErrand = async (req, res) => {
   errand.completedAt       = new Date();
   await errand.save();
 
+  conversationService.setReadonly(errand._id, { reason: 'completed', until: null });
+
   const populated = await attachProofPhotoUrl(
     (await populateErrand(Errand.findById(errand._id))).toObject(),
   );
@@ -765,6 +777,8 @@ exports.adminAssignRunner = async (req, res) => {
   if (isReassignment && !errand.floatReleased) {
     const previousRunnerId = errand.runner;
 
+    conversationService.archiveForErrand(errand._id);
+
     await cancelErrandWallet(previousRunnerId, errand);
     // Previous runner is no longer tied to this errand — free them up
     await User.findByIdAndUpdate(previousRunnerId, {
@@ -798,6 +812,7 @@ exports.adminAssignRunner = async (req, res) => {
   const populated = await populateErrand(Errand.findById(errand._id));
 
   emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+  conversationService.getOrCreateForErrand(populated);
 
   notify.send({
     userId:       errand.customer,
@@ -914,4 +929,34 @@ exports.getErrand = async (req, res) => {
   const errand = await attachProofPhotoUrl(errandDoc.toObject());
 
   res.status(200).json({ status: 'success', data: { errand } });
+};
+
+// ── GET /api/errands/customer/stats ───────────────────────────────────────────
+// Customer-facing Profile screen stat cards (Total Orders / Completed).
+
+exports.getMyErrandStats = async (req, res) => {
+  const [agg] = await Errand.aggregate([
+    { $match: { customer: req.user._id } },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        completed: {
+          $sum: { $cond: [{ $in: ['$status', ['completed', 'confirmed']] }, 1, 0] },
+        },
+        cancelled: {
+          $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      totalErrands: agg?.total || 0,
+      completedErrands: agg?.completed || 0,
+      cancelledErrands: agg?.cancelled || 0,
+    },
+  });
 };

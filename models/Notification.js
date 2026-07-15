@@ -22,7 +22,7 @@ const notificationSchema = new mongoose.Schema(
     type: {
       type: String,
       enum: {
-        values: ['errand', 'payment', 'dispute', 'rating', 'admin', 'system'],
+        values: ['errand', 'payment', 'dispute', 'rating', 'admin', 'system', 'message'],
         message: 'Invalid notification type',
       },
       required: true,
@@ -38,7 +38,7 @@ const notificationSchema = new mongoose.Schema(
     },
     relatedModel: {
       type: String,
-      enum: ['Errand', 'Payment', 'Dispute', 'User', null],
+      enum: ['Errand', 'Payment', 'Dispute', 'User', 'Conversation', null],
       default: null,
     },
   },
