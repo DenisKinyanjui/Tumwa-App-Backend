@@ -59,7 +59,7 @@ const populateConversation = (query) =>
   query
     .populate('customer', 'name phone verificationStatus')
     .populate('runner', 'name phone verificationStatus')
-    .populate('errand', 'title status');
+    .populate('errand', 'title status location amount');
 
 // GET /api/conversations/errand/:errandId
 exports.getConversationForErrand = async (req, res) => {
@@ -207,16 +207,19 @@ exports.sendImageMessage = async (req, res) => {
     req.file.mimetype
   );
 
+  const caption = req.body.caption && req.body.caption.trim() ? req.body.caption.trim() : null;
+
   const message = await Message.create({
     conversation: conversation._id,
     errand: conversation.errand,
     sender: req.user._id,
     type: 'image',
     imageKey,
+    text: caption,
   });
 
   conversation.lastMessageAt = message.createdAt;
-  conversation.lastMessagePreview = '📷 Photo';
+  conversation.lastMessagePreview = caption ? `📷 ${caption}` : '📷 Photo';
   await conversation.save();
 
   await notifyNewMessage(conversation, message, req.user);
