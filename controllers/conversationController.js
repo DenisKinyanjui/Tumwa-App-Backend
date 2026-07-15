@@ -6,6 +6,20 @@ const r2Service = require('../services/r2Service');
 const notify = require('../services/notifyService');
 const { emitChatMessage, emitChatRead } = require('../socket/socketManager');
 
+// The global xssSanitize middleware (middlewares/security.js) HTML-escapes
+// every request-body string so it's safe to reflect into HTML contexts (e.g.
+// the admin dashboard). Chat text is only ever rendered as plain text in the
+// mobile app, so storing it escaped just corrupts apostrophes/quotes for
+// every reader (bubbles, push notifications, previews) — undo it here, at
+// the one boundary where the escaping doesn't apply, before persisting.
+const unescapeHtml = (str) =>
+  str
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+
 // conversation.customer/runner may be a raw ObjectId or a populated User
 // document (getConversationForErrand/getConversation populate them for the
 // header response) — normalize to the id string either way.
@@ -158,8 +172,8 @@ exports.sendMessage = async (req, res) => {
     errand: conversation.errand,
     sender: req.user._id,
     type: 'text',
-    text: text.trim(),
-    quickReply: quickReply || null,
+    text: unescapeHtml(text.trim()),
+    quickReply: quickReply ? unescapeHtml(quickReply) : null,
   });
 
   conversation.lastMessageAt = message.createdAt;
@@ -207,7 +221,9 @@ exports.sendImageMessage = async (req, res) => {
     req.file.mimetype
   );
 
-  const caption = req.body.caption && req.body.caption.trim() ? req.body.caption.trim() : null;
+  const caption = req.body.caption && req.body.caption.trim()
+    ? unescapeHtml(req.body.caption.trim())
+    : null;
 
   const message = await Message.create({
     conversation: conversation._id,
