@@ -711,7 +711,11 @@ exports.confirmDelivery = async (req, res) => {
 
     await session.commitTransaction();
 
-    emitErrandUpdate(errand.toObject(), errand.customer, errand.runner);
+    const populated = await attachProofPhotoUrl(
+      (await populateErrand(Errand.findById(errand._id))).toObject(),
+    );
+
+    emitErrandUpdate(populated, errand.customer, errand.runner);
     emitWalletUpdate(errand.runner, 'earnings_released');
 
     notify.send({
@@ -728,7 +732,7 @@ exports.confirmDelivery = async (req, res) => {
     res.status(200).json({
       status:  'success',
       message: `Delivery confirmed. KES ${errand.runnerReceives} released to runner.`,
-      data:    { errand },
+      data:    { errand: populated },
     });
   } catch (err) {
     await session.abortTransaction();
