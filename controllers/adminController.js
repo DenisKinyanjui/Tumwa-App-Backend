@@ -94,7 +94,7 @@ exports.getUser = async (req, res) => {
 
 // GET /api/admin/verifications/:userId
 // Returns fresh presigned verification URLs for a single runner.
-// Used by the admin panel to refresh documents without reloading the full page.
+// Used by the admin panel to refresh documents without reloading the full page
 exports.getVerification = async (req, res) => {
   const verificationDoc = await RunnerVerification.findOne({ user: req.params.userId }).lean();
   if (!verificationDoc) {
