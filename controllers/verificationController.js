@@ -38,8 +38,12 @@ const TRANSPORT_OPTIONS = ['motorbike', 'bicycle', 'car', 'on_foot', 'public_tra
 // Identified by phone number; requires phoneVerified=true.
 
 exports.submit = async (req, res) => {
-  const { phone, nationalId, meansOfTransport, areasOfOperation } = req.body;
+  const { phone, nationalId, meansOfTransport, areasOfOperation, reuseSelfieAsProfilePhoto } = req.body;
   const files = req.files;
+  // When the client re-picks the same selfie as the profile picture, it sends
+  // this flag instead of re-uploading the identical image bytes a second time
+  // (which was needlessly doubling the upload size / time for that case).
+  const reuseSelfie = reuseSelfieAsProfilePhoto === 'true' || reuseSelfieAsProfilePhoto === true;
 
   // ── Manual validation ────────────────────────────────────────────────────────
   const errors = [];
@@ -58,10 +62,10 @@ exports.submit = async (req, res) => {
     errors.push('Invalid areas of operation format');
   }
 
-  if (!files?.idFront?.[0])      errors.push('ID front photo is required');
-  if (!files?.idBack?.[0])       errors.push('ID back photo is required');
-  if (!files?.selfie?.[0])       errors.push('Selfie photo is required');
-  if (!files?.profilePhoto?.[0]) errors.push('A profile picture is required');
+  if (!files?.idFront?.[0])  errors.push('ID front photo is required');
+  if (!files?.idBack?.[0])   errors.push('ID back photo is required');
+  if (!files?.selfie?.[0])   errors.push('Selfie photo is required');
+  if (!reuseSelfie && !files?.profilePhoto?.[0]) errors.push('A profile picture is required');
 
   if (errors.length > 0) {
     return res.status(422).json({ status: 'fail', message: 'Validation failed', errors });
@@ -89,17 +93,24 @@ exports.submit = async (req, res) => {
   const folder = `runner-verification/${user._id}`;
   const previousPhotoKey = user.photoKey;
 
-  const [idFrontKey, idBackKey, selfieKey, photoKey] = await Promise.all([
+  const [idFrontKey, idBackKey, selfieKey, uploadedPhotoKey] = await Promise.all([
     r2Service.uploadFile(files.idFront[0].buffer, folder, 'id-front', files.idFront[0].mimetype),
     r2Service.uploadFile(files.idBack[0].buffer, folder, 'id-back',  files.idBack[0].mimetype),
     r2Service.uploadFile(files.selfie[0].buffer, folder, 'selfie',   files.selfie[0].mimetype),
-    r2Service.uploadFile(
-      files.profilePhoto[0].buffer,
-      `profile-photos/${user._id}`,
-      'photo',
-      files.profilePhoto[0].mimetype,
-    ),
+    reuseSelfie
+      ? Promise.resolve(null)
+      : r2Service.uploadFile(
+          files.profilePhoto[0].buffer,
+          `profile-photos/${user._id}`,
+          'photo',
+          files.profilePhoto[0].mimetype,
+        ),
   ]);
+
+  // Reusing the selfie copies its R2 key onto photoKey rather than sharing a
+  // live reference — the KYC selfieKey stays private on RunnerVerification;
+  // nothing downstream ever derives a profile picture from it again.
+  const photoKey = reuseSelfie ? selfieKey : uploadedPhotoKey;
 
   // ── Save verification record ──────────────────────────────────────────────────
   if (existing) {
