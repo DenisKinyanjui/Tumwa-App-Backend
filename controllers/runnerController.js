@@ -140,7 +140,7 @@ exports.rateRunner = async (req, res) => {
 
 exports.getRunnerRating = async (req, res) => {
   const runner = await User.findById(req.params.id).select(
-    'name rating ratingCount level completedErrands disputesAgainst'
+    'name role rating ratingCount level completedErrands disputesAgainst'
   );
   if (!runner) return res.status(404).json({ status: 'fail', message: 'Runner not found' });
   if (runner.role !== 'runner') {
@@ -194,7 +194,7 @@ exports.getRunnerRating = async (req, res) => {
 
 exports.getRunnerLevel = async (req, res) => {
   const runner = await User.findById(req.params.id).select(
-    'name level rating ratingCount completedErrands disputesAgainst'
+    'name role level rating ratingCount completedErrands disputesAgainst'
   );
   if (!runner) return res.status(404).json({ status: 'fail', message: 'Runner not found' });
   if (runner.role !== 'runner') {
