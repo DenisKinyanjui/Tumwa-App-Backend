@@ -30,7 +30,7 @@ exports.rateRunner = async (req, res) => {
   const errand = await Errand.findById(errandId);
   if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
 
-  if (errand.status !== 'completed') {
+  if (!['completed', 'confirmed'].includes(errand.status)) {
     return res.status(400).json({
       status: 'fail',
       message: 'You can only rate a runner after the errand is completed',
