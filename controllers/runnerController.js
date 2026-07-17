@@ -216,11 +216,15 @@ exports.getRunnerLevel = async (req, res) => {
   });
 };
 
-// ─── GET /api/runners/performance?range=week|month|year ─────────────────────
-// Runner-facing Performance screen: stat grid + earnings sparkline for range.
+// ─── GET /api/runners/performance?range=week|month|year|overall ─────────────
+// Runner-facing Performance screen (and Profile's Runner/Earnings Overview):
+// stat grid + earnings sparkline for range. 'overall' covers all-time.
 
 const rangeStart = (range) => {
   const now = new Date();
+  if (range === 'overall') {
+    return new Date(0);
+  }
   if (range === 'year') {
     return new Date(now.getFullYear(), 0, 1);
   }
@@ -237,7 +241,7 @@ const rangeStart = (range) => {
 };
 
 exports.getPerformance = async (req, res) => {
-  const range = ['week', 'month', 'year'].includes(req.query.range) ? req.query.range : 'week';
+  const range = ['week', 'month', 'year', 'overall'].includes(req.query.range) ? req.query.range : 'week';
   const since = rangeStart(range);
 
   const [countsAgg, earningsAgg, sparklineAgg] = await Promise.all([
@@ -267,7 +271,12 @@ exports.getPerformance = async (req, res) => {
         $group: {
           _id: range === 'year'
             ? { $month: '$paidAt' }
-            : { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
+            // 'overall' can span multiple years — group by year+month (not
+            // bare month) so the same calendar month in different years
+            // doesn't get merged into one bucket, and by day for week/month.
+            : range === 'overall'
+              ? { $dateToString: { format: '%Y-%m', date: '$paidAt' } }
+              : { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
           total: { $sum: { $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'] } },
         },
       },
