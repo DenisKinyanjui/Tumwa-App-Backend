@@ -12,6 +12,7 @@ const { emitToUser, emitToRoom } = require('../socket/socketManager'); // kept f
 const { buildReport } = require('../services/adminReportService');
 const notify = require('../services/notifyService');
 const { presignVerification } = require('../utils/verificationPresign');
+const { attachProofPhotoUrl } = require('../utils/errandPresign');
 
 // ── Pagination helper ─────────────────────────────────────────────────────────
 const paginate = (query) => {
@@ -275,15 +276,16 @@ exports.getErrands = async (req, res) => {
 
 // GET /api/admin/errands/:id
 exports.getErrand = async (req, res) => {
-  const errand = await Errand.findById(req.params.id)
+  const errandDoc = await Errand.findById(req.params.id)
     .populate('customer', 'name phone')
     .populate('runner', 'name phone rating level trustWallet');
 
-  if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
+  if (!errandDoc) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
 
-  const [payment, dispute] = await Promise.all([
-    Payment.findOne({ errand: errand._id, type: 'errand_payment' }).sort('-createdAt'),
-    Dispute.findOne({ errand: errand._id }),
+  const [payment, dispute, errand] = await Promise.all([
+    Payment.findOne({ errand: errandDoc._id, type: 'errand_payment' }).sort('-createdAt'),
+    Dispute.findOne({ errand: errandDoc._id }),
+    attachProofPhotoUrl(errandDoc.toObject()),
   ]);
 
   res.status(200).json({

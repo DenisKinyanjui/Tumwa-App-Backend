@@ -1,7 +1,7 @@
 const multer = require('multer');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
-const RunnerVerification = require('../models/RunnerVerification');
+const User = require('../models/User');
 const r2Service = require('../services/r2Service');
 const notify = require('../services/notifyService');
 const { emitChatMessage, emitChatRead } = require('../socket/socketManager');
@@ -30,32 +30,26 @@ const isParticipant = (conversation, userId) =>
   idOf(conversation.runner) === userId.toString();
 
 // Resolves the counterpart's display info for the chat header: name, phone,
-// and (runner only) a signed selfie URL + verified badge — same derivation
-// errandController.js's attachRunnerPhotos uses for the errand detail screen.
+// profile picture (User.photoKey, signed on demand), and (runner only) a
+// verified badge. photoKey is fetched out-of-band rather than added to
+// populateConversation's select, so the raw R2 key never appears in the
+// `conversation` object also returned alongside this in the response.
 const buildOtherParticipant = async (conversation, viewerId) => {
   const isViewerCustomer = conversation.customer._id.toString() === viewerId.toString();
   const other = isViewerCustomer ? conversation.runner : conversation.customer;
 
-  const base = {
+  const otherUser = await User.findById(other._id).select('photoKey').lean();
+
+  return {
     id: other._id,
     name: other.name,
     phone: other.phone,
     role: isViewerCustomer ? 'runner' : 'customer',
-    verified: false,
-    photoUrl: null,
+    verified: isViewerCustomer ? other.verificationStatus === 'approved' : false,
+    photoUrl: otherUser?.photoKey
+      ? await r2Service.getSignedDownloadUrl(otherUser.photoKey, 3600)
+      : null,
   };
-
-  if (base.role === 'runner') {
-    base.verified = other.verificationStatus === 'approved';
-    const verification = await RunnerVerification.findOne({ user: other._id })
-      .select('selfieKey')
-      .lean();
-    if (verification?.selfieKey) {
-      base.photoUrl = await r2Service.getSignedDownloadUrl(verification.selfieKey, 3600);
-    }
-  }
-
-  return base;
 };
 
 const attachImageUrls = async (messages) => {

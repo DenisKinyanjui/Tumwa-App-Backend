@@ -156,6 +156,12 @@ const userSchema = new mongoose.Schema(
     },
 
     // ── Extended profile (Edit Profile screen) ─────────────────────────────
+    // R2 object key for the user's profile picture — private; a signed URL
+    // is generated on demand (see profileController.js / authController.js).
+    // Set either from the Edit Profile upload flow or, for runners, the
+    // optional profile-picture step in IdentityVerification. Independent of
+    // RunnerVerification.selfieKey, which is a private KYC document.
+    photoKey: { type: String, default: null },
     dateOfBirth: { type: Date, default: null },
     gender: {
       type: String,

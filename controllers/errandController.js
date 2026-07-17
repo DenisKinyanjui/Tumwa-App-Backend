@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const Errand = require('../models/Errand');
 const User = require('../models/User');
-const RunnerVerification = require('../models/RunnerVerification');
 const r2Service = require('../services/r2Service');
 const {
   calcFees,
@@ -13,6 +12,7 @@ const {
   penalizeErrandWallet,
 } = require('../utils/walletUtils');
 const { haversineKm } = require('../utils/distanceCalculator');
+const { attachProofPhotoUrl } = require('../utils/errandPresign');
 const {
   runMatchingCycle,
   validateAcceptance,
@@ -29,40 +29,30 @@ const populateErrand = (query) =>
     .populate('customer', 'name phone')
     .populate('runner', 'name phone rating wallet');
 
-// Attaches each runner's verification selfie as a short-lived signed URL
-// (runner.photoUrl) so the customer app can show it as a profile picture.
-// Only called for customer-facing responses — the selfie is otherwise a
-// private KYC document used solely for admin verification review.
+// Attaches each runner's profile picture (User.photoKey) as a short-lived
+// signed URL (runner.photoUrl) so the customer app can show it. Only called
+// for customer-facing responses — fetched out-of-band (rather than via
+// populateErrand's shared select) so the raw R2 key never appears in
+// responses/socket payloads that don't go through this attachment step.
 const attachRunnerPhotos = async (errands) => {
   const runnerIds = [...new Set(
     errands.filter((e) => e.runner).map((e) => e.runner._id.toString())
   )];
   if (runnerIds.length === 0) return errands;
 
-  const verifications = await RunnerVerification.find({ user: { $in: runnerIds } })
-    .select('user selfieKey')
-    .lean();
+  const users = await User.find({ _id: { $in: runnerIds } }).select('photoKey').lean();
 
   const photoUrlByRunner = new Map();
-  await Promise.all(verifications.map(async (v) => {
-    if (!v.selfieKey) return;
-    const url = await r2Service.getSignedDownloadUrl(v.selfieKey, 3600);
-    photoUrlByRunner.set(v.user.toString(), url);
+  await Promise.all(users.map(async (u) => {
+    if (!u.photoKey) return;
+    const url = await r2Service.getSignedDownloadUrl(u.photoKey, 3600);
+    photoUrlByRunner.set(u._id.toString(), url);
   }));
 
   errands.forEach((e) => {
     if (e.runner) e.runner.photoUrl = photoUrlByRunner.get(e.runner._id.toString()) || null;
   });
   return errands;
-};
-
-// Attaches a short-lived signed URL for the runner's proof-of-completion
-// photo (if one was uploaded) so the customer/runner apps can display it.
-const attachProofPhotoUrl = async (errand) => {
-  if (errand.proofPhotoKey) {
-    errand.proofPhotoUrl = await r2Service.getSignedDownloadUrl(errand.proofPhotoKey, 3600);
-  }
-  return errand;
 };
 
 // Single optional image upload for PATCH /errands/:id/complete

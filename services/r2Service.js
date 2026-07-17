@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const logger = require('../utils/logger');
 
@@ -47,4 +47,15 @@ exports.getSignedDownloadUrl = async (key, expiresIn = 900) => {
     Key: key,
   });
   return getSignedUrl(s3, command, { expiresIn });
+};
+
+/**
+ * Delete a private R2 object (e.g. a profile picture being replaced/removed).
+ * @param {string} key - R2 object key
+ */
+exports.deleteFile = async (key) => {
+  await s3.send(new DeleteObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+  }));
 };

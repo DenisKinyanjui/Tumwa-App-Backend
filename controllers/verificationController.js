@@ -20,9 +20,13 @@ const upload = multer({
 
 // Export the multer middleware so the router can apply it
 exports.uploadMiddleware = upload.fields([
-  { name: 'idFront', maxCount: 1 },
-  { name: 'idBack',  maxCount: 1 },
-  { name: 'selfie',  maxCount: 1 },
+  { name: 'idFront',      maxCount: 1 },
+  { name: 'idBack',       maxCount: 1 },
+  { name: 'selfie',       maxCount: 1 },
+  // Public profile picture — either the selfie above re-picked by the client,
+  // or a separate gallery photo. Stored independently on User.photoKey; the
+  // KYC selfie itself stays private and is never shown to other users.
+  { name: 'profilePhoto', maxCount: 1 },
 ]);
 
 // ── Allowed values ────────────────────────────────────────────────────────────
@@ -54,9 +58,10 @@ exports.submit = async (req, res) => {
     errors.push('Invalid areas of operation format');
   }
 
-  if (!files?.idFront?.[0])  errors.push('ID front photo is required');
-  if (!files?.idBack?.[0])   errors.push('ID back photo is required');
-  if (!files?.selfie?.[0])   errors.push('Selfie photo is required');
+  if (!files?.idFront?.[0])      errors.push('ID front photo is required');
+  if (!files?.idBack?.[0])       errors.push('ID back photo is required');
+  if (!files?.selfie?.[0])       errors.push('Selfie photo is required');
+  if (!files?.profilePhoto?.[0]) errors.push('A profile picture is required');
 
   if (errors.length > 0) {
     return res.status(422).json({ status: 'fail', message: 'Validation failed', errors });
@@ -82,11 +87,18 @@ exports.submit = async (req, res) => {
 
   // ── Upload images to R2 ───────────────────────────────────────────────────────
   const folder = `runner-verification/${user._id}`;
+  const previousPhotoKey = user.photoKey;
 
-  const [idFrontKey, idBackKey, selfieKey] = await Promise.all([
+  const [idFrontKey, idBackKey, selfieKey, photoKey] = await Promise.all([
     r2Service.uploadFile(files.idFront[0].buffer, folder, 'id-front', files.idFront[0].mimetype),
     r2Service.uploadFile(files.idBack[0].buffer, folder, 'id-back',  files.idBack[0].mimetype),
     r2Service.uploadFile(files.selfie[0].buffer, folder, 'selfie',   files.selfie[0].mimetype),
+    r2Service.uploadFile(
+      files.profilePhoto[0].buffer,
+      `profile-photos/${user._id}`,
+      'photo',
+      files.profilePhoto[0].mimetype,
+    ),
   ]);
 
   // ── Save verification record ──────────────────────────────────────────────────
@@ -139,7 +151,13 @@ exports.submit = async (req, res) => {
     });
   }
 
-  await User.findByIdAndUpdate(user._id, { verificationStatus: 'pending' });
+  await User.findByIdAndUpdate(user._id, { verificationStatus: 'pending', photoKey });
+
+  if (previousPhotoKey) {
+    r2Service.deleteFile(previousPhotoKey).catch((err) => {
+      logger.error('Failed to delete previous profile photo', { userId: user._id, err: err.message });
+    });
+  }
 
   logger.info('Runner verification submitted', { userId: user._id, ip: req.ip });
 

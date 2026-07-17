@@ -5,10 +5,16 @@ const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const termiiService = require('../services/termiiService');
 const emailService = require('../services/emailService');
+const r2Service = require('../services/r2Service');
 const { JWT, COOKIE, GOOGLE } = require('../config/security');
 const logger = require('../utils/logger');
 
 const googleClient = new OAuth2Client();
+
+// Profile pictures are stored as private R2 keys — resolve to a short-lived
+// signed URL whenever a user object is sent to a client.
+const resolvePhotoUrl = (photoKey) =>
+  photoKey ? r2Service.getSignedDownloadUrl(photoKey, 3600) : Promise.resolve(null);
 
 // The refresh token normally travels only as an httpOnly cookie (web/admin).
 // React Native doesn't reliably persist/resend httpOnly cookies, so mobile
@@ -58,7 +64,8 @@ const clearRefreshCookie = (res) => {
   });
 };
 
-const sendAuthResponse = (res, statusCode, user, accessToken, extra = {}) => {
+const sendAuthResponse = async (res, statusCode, user, accessToken, extra = {}) => {
+  const photoUrl = await resolvePhotoUrl(user.photoKey);
   res.status(statusCode).json({
     status: 'success',
     accessToken,
@@ -73,6 +80,7 @@ const sendAuthResponse = (res, statusCode, user, accessToken, extra = {}) => {
         wallet: user.wallet,
         level: user.level,
         rating: user.rating,
+        photoUrl,
       },
     },
   });
@@ -115,7 +123,7 @@ exports.register = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User registered', { userId: user._id, role: user.role, ip: req.ip });
-  sendAuthResponse(res, 201, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
+  await sendAuthResponse(res, 201, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
 };
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -148,7 +156,7 @@ exports.login = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User logged in', { userId: user._id, role: user.role, ip: req.ip });
-  sendAuthResponse(res, 200, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
+  await sendAuthResponse(res, 200, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
 };
 
 // ── POST /api/auth/google ─────────────────────────────────────────────────────
@@ -211,7 +219,7 @@ exports.googleAuth = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User logged in via Google', { userId: user._id, ip: req.ip });
-  sendAuthResponse(res, 200, user, accessToken, {
+  await sendAuthResponse(res, 200, user, accessToken, {
     phoneRequired: !user.phone,
     ...(isMobileClient(req) ? { refreshToken } : {}),
   });
@@ -236,6 +244,8 @@ exports.completePhone = async (req, res) => {
   req.user.phone = phone;
   await req.user.save();
 
+  const photoUrl = await resolvePhotoUrl(req.user.photoKey);
+
   logger.auth.info('Phone number added to account', { userId: req.user._id, ip: req.ip });
   res.status(200).json({
     status: 'success',
@@ -249,6 +259,7 @@ exports.completePhone = async (req, res) => {
         wallet: req.user.wallet,
         level: req.user.level,
         rating: req.user.rating,
+        photoUrl,
       },
     },
   });
@@ -481,6 +492,8 @@ exports.resetPassword = async (req, res) => {
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 
 exports.getMe = async (req, res) => {
+  const photoUrl = await resolvePhotoUrl(req.user.photoKey);
+
   res.status(200).json({
     status: 'success',
     data: {
@@ -501,6 +514,7 @@ exports.getMe = async (req, res) => {
         vehicleInfo: req.user.vehicleInfo,
         payoutDetails: req.user.payoutDetails,
         payoutMpesaNumber: req.user.payoutMpesaNumber,
+        photoUrl,
       },
     },
   });

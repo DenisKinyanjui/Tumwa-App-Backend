@@ -11,6 +11,12 @@ router.patch(
   validate(schemas.updatePersonalInfo),
   profileController.updatePersonalInfo
 );
+router.post(
+  '/photo',
+  profileController.uploadPhotoMiddleware,
+  profileController.uploadPhoto
+);
+router.delete('/photo', profileController.removePhoto);
 router.patch(
   '/vehicle-info',
   restrictTo('runner'),

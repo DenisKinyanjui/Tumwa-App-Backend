@@ -1,5 +1,22 @@
+const multer = require('multer');
 const User = require('../models/User');
+const r2Service = require('../services/r2Service');
 const logger = require('../utils/logger');
+
+// ── Multer setup ──────────────────────────────────────────────────────────────
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
+
+exports.uploadPhotoMiddleware = upload.single('photo');
 
 // ── PATCH /api/profile/personal-info ──────────────────────────────────────────
 
@@ -40,6 +57,53 @@ exports.updatePersonalInfo = async (req, res) => {
       },
     },
   });
+};
+
+// ── POST /api/profile/photo ───────────────────────────────────────────────────
+
+exports.uploadPhoto = async (req, res) => {
+  if (!req.file) {
+    return res.status(422).json({ status: 'fail', message: 'A photo file is required' });
+  }
+
+  const previousKey = req.user.photoKey;
+
+  const photoKey = await r2Service.uploadFile(
+    req.file.buffer,
+    `profile-photos/${req.user._id}`,
+    'photo',
+    req.file.mimetype,
+  );
+
+  await User.findByIdAndUpdate(req.user._id, { photoKey });
+
+  if (previousKey) {
+    r2Service.deleteFile(previousKey).catch((err) => {
+      logger.error('Failed to delete previous profile photo', { userId: req.user._id, err: err.message });
+    });
+  }
+
+  const photoUrl = await r2Service.getSignedDownloadUrl(photoKey, 3600);
+
+  logger.info('Profile photo updated', { userId: req.user._id });
+  res.status(200).json({ status: 'success', data: { photoUrl } });
+};
+
+// ── DELETE /api/profile/photo ─────────────────────────────────────────────────
+
+exports.removePhoto = async (req, res) => {
+  const previousKey = req.user.photoKey;
+
+  await User.findByIdAndUpdate(req.user._id, { photoKey: null });
+
+  if (previousKey) {
+    r2Service.deleteFile(previousKey).catch((err) => {
+      logger.error('Failed to delete removed profile photo', { userId: req.user._id, err: err.message });
+    });
+  }
+
+  logger.info('Profile photo removed', { userId: req.user._id });
+  res.status(200).json({ status: 'success' });
 };
 
 // ── PATCH /api/profile/vehicle-info ───────────────────────────────────────────
