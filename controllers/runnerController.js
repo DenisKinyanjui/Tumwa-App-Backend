@@ -261,7 +261,7 @@ exports.getPerformance = async (req, res) => {
       {
         $group: {
           _id: null,
-          total: { $sum: { $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'] } },
+          total: { $sum: { $add: ['$amount', '$runnerReceives'] } },
         },
       },
     ]),
@@ -277,7 +277,7 @@ exports.getPerformance = async (req, res) => {
             : range === 'overall'
               ? { $dateToString: { format: '%Y-%m', date: '$paidAt' } }
               : { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
-          total: { $sum: { $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'] } },
+          total: { $sum: { $add: ['$amount', '$runnerReceives'] } },
         },
       },
       { $sort: { _id: 1 } },

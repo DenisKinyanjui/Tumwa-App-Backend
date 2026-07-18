@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const Payment = require('../models/Payment');
 const Errand = require('../models/Errand');
-const { creditFloat, creditEarnings, calcFees } = require('../utils/walletUtils');
+const User = require('../models/User');
+const { creditEarnings, calcFees } = require('../utils/walletUtils');
 const { emitPaymentEvent, emitWalletUpdate } = require('../socket/socketManager');
 const { runMatchingCycle } = require('../services/matchingService');
 const notify = require('../services/notifyService');
@@ -13,9 +15,36 @@ const {
   normalizePhone,
 } = require('../services/mpesaService');
 
+/**
+ * Build and save the Errand from a funded source (STK payment or customer
+ * wallet credit), shared by handleSTKCallback and the wallet-covered path in
+ * initiatePayment so the fee/errand-construction logic lives in one place.
+ */
+const createErrandFromFundedSource = async ({ customerId, errandData, session }) => {
+  const fees = calcFees(errandData.amount);
+
+  return Errand.create([{
+    customer:    customerId,
+    title:       errandData.title,
+    description: errandData.description,
+    location: {
+      address:             errandData.location.address,
+      coordinates:         errandData.location.pickup ?? null,
+      deliveryCoordinates: errandData.location.delivery ?? null,
+    },
+    amount:      errandData.amount,
+    isPaid:      true,
+    paidAt:      new Date(),
+    ...fees,
+  }], { session }).then(([errand]) => ({ errand, fees }));
+};
+
 // ─── POST /api/payments/initiate ─────────────────────────────────────────────
 // Pay-first flow: errand details are stored in the payment; the errand itself
-// is created only after the STK callback confirms success.
+// is created only after the STK callback confirms success. If the customer's
+// wallet balance covers the full cost, we skip STK entirely and pay from the
+// wallet — no partial coverage; if the balance can't cover it all, ignore the
+// wallet and run the normal full STK push.
 exports.initiatePayment = async (req, res) => {
   const { phone, errandDetails } = req.body;
 
@@ -60,6 +89,65 @@ exports.initiatePayment = async (req, res) => {
 
   const fees = calcFees(numAmount);
   const chargeAmount = Math.ceil(fees.totalCustomerPays);
+
+  // ── Wallet-covered path — all-or-nothing, no partial coverage ────────────
+  const customer = await User.findById(req.user._id);
+  if (customer.customerWallet.balance >= chargeAmount) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      await User.findByIdAndUpdate(
+        req.user._id,
+        { $inc: { 'customerWallet.balance': -chargeAmount } },
+        { session, runValidators: true },
+      );
+
+      const { errand } = await createErrandFromFundedSource({
+        customerId: req.user._id,
+        errandData: {
+          title: title.trim(),
+          description: description.trim(),
+          location: {
+            address: location.address.trim(),
+            pickup: location.pickup ?? null,
+            delivery: location.delivery ?? null,
+          },
+          amount: numAmount,
+        },
+        session,
+      });
+
+      await session.commitTransaction();
+
+      setImmediate(() => runMatchingCycle(errand._id.toString()));
+
+      emitWalletUpdate(req.user._id, 'customer_wallet_update');
+
+      notify.send({
+        userId:    req.user._id,
+        title:     'Errand Posted — Paid from Wallet',
+        message:   `KES ${chargeAmount} paid from your wallet. "${errand.title}" is now live for runners.`,
+        type:      'payment',
+        relatedId: errand._id,
+        relatedModel: 'Errand',
+        eventName: 'payment-confirmed',
+        eventData: { errandId: errand._id, amount: chargeAmount },
+      });
+
+      return res.status(201).json({
+        status: 'success',
+        message: 'Paid from wallet. Errand is now live for runners.',
+        data: { status: 'funded', errandId: errand._id, amount: chargeAmount },
+      });
+    } catch (err) {
+      await session.abortTransaction();
+      logger.payment.error('Wallet-covered payment failed', { userId: req.user._id, error: err.message });
+      return res.status(500).json({ status: 'fail', message: 'Could not complete payment from wallet. Please try again.' });
+    } finally {
+      session.endSession();
+    }
+  }
 
   let stkResult;
   try {
@@ -109,6 +197,7 @@ exports.initiatePayment = async (req, res) => {
     status: 'success',
     message: 'M-Pesa prompt sent. Complete payment on your phone.',
     data: {
+      status: 'pending_stk',
       paymentId: payment._id,
       checkoutRequestId: stkResult.checkoutRequestId,
       amount: chargeAmount,
@@ -217,17 +306,6 @@ exports.handleSTKCallback = async (req, res) => {
         eventName: 'payment-failed',
         eventData: { paymentId: payment._id, reason: resultDesc },
       });
-    } else if (payment.type === 'float_deposit') {
-      notify.send({
-        userId:    payment.runner,
-        title:     'Deposit Failed',
-        message:   `Float deposit of KES ${payment.amount} did not go through. Please try again.`,
-        type:      'payment',
-        relatedId: payment._id,
-        relatedModel: 'Payment',
-        eventName: 'deposit-failed',
-        eventData: { paymentId: payment._id, amount: payment.amount, reason: resultDesc },
-      });
     }
     return;
   }
@@ -244,25 +322,6 @@ exports.handleSTKCallback = async (req, res) => {
     receiptNumber,
   });
 
-  // ── float_deposit: credit runner's floatBalance ───────────────────────────
-  if (payment.type === 'float_deposit') {
-    await payment.save();
-    await creditFloat(payment.runner, payment.amount);
-    emitWalletUpdate(payment.runner, 'float_deposit');
-
-    notify.send({
-      userId:    payment.runner,
-      title:     'Float Deposited',
-      message:   `KES ${payment.amount} added to your float. Receipt: ${receiptNumber}.`,
-      type:      'payment',
-      relatedId: payment._id,
-      relatedModel: 'Payment',
-      eventName: 'deposit-completed',
-      eventData: { paymentId: payment._id, amount: payment.amount, receiptNumber },
-    });
-    return;
-  }
-
   // ── errand_payment: create the errand, then mark payment done ────────────
   const { errandData } = payment;
   if (!errandData?.title || !errandData?.amount) {
@@ -271,25 +330,12 @@ exports.handleSTKCallback = async (req, res) => {
     return;
   }
 
-  const fees = calcFees(errandData.amount);
-
   let errand;
   try {
-    errand = await Errand.create({
-      customer:    payment.customer,
-      title:       errandData.title,
-      description: errandData.description,
-      location: {
-        address:     errandData.location.address,
-        // Pickup coordinates stored as the main point for proximity matching
-        coordinates:         errandData.location.pickup ?? null,
-        deliveryCoordinates: errandData.location.delivery ?? null,
-      },
-      amount:      errandData.amount,
-      isPaid:      true,
-      paidAt:      new Date(),
-      ...fees,
-    });
+    ({ errand } = await createErrandFromFundedSource({
+      customerId: payment.customer,
+      errandData,
+    }));
   } catch (err) {
     logger.payment.error('STK callback: errand creation failed', {
       paymentId: payment._id,

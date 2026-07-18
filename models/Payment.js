@@ -5,16 +5,16 @@ const mongoose = require('mongoose');
  *
  * type = 'errand_payment'  → customer pays before errand is created (STK push)
  *                            errandData holds form details; errand is created in the callback
- *        'float_deposit'   → runner tops up float balance (STK push)
- *        'withdrawal'      → runner withdraws available balance (B2C)
+ *        'withdrawal'      → runner withdraws available earnings (B2C)
  *        'dispute_refund'  → customer refund paid out after dispute resolution (B2C)
+ *        'wallet_credit'   → customer wallet credited (refund/cancellation) — no M-Pesa leg
  */
 const paymentSchema = new mongoose.Schema(
   {
     type: {
       type: String,
       enum: {
-        values: ['errand_payment', 'float_deposit', 'withdrawal', 'dispute_refund'],
+        values: ['errand_payment', 'withdrawal', 'dispute_refund', 'wallet_credit'],
         message: 'Invalid payment type',
       },
       required: true,
@@ -32,7 +32,7 @@ const paymentSchema = new mongoose.Schema(
       default: null,
     },
 
-    // ── float_deposit + withdrawal fields ─────────────────────────────────────
+    // ── withdrawal field ──────────────────────────────────────────────────────
     runner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -47,7 +47,8 @@ const paymentSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: [true, 'Phone number is required'],
+      // wallet_credit entries have no M-Pesa leg, so no phone number
+      required: [function () { return this.type !== 'wallet_credit'; }, 'Phone number is required'],
       trim: true,
     },
     status: {

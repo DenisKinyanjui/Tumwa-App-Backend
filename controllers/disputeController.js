@@ -4,11 +4,11 @@ const Errand = require('../models/Errand');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const {
-  penalizeErrandWallet,
-  completeErrandWallet,
+  penalizeRunnerCapacity,
+  completeErrandCapacity,
   refundToCustomer,
 } = require('../utils/walletUtils');
-const { initiateB2C, normalizePhone } = require('../services/mpesaService');
+const { recalculateWorkingCapital } = require('../services/workingCapitalService');
 const notify = require('../services/notifyService');
 const logger = require('../utils/logger');
 
@@ -23,7 +23,7 @@ const DISPUTABLE_STATUSES = ['in_progress', 'completed'];
 
 const populateDispute = (query) =>
   query
-    .populate('errand', 'title amount status trustHeld floatUsed ownMoneyUsed runnerReceives')
+    .populate('errand', 'title amount status trustHeld capacityUsed runnerReceives')
     .populate('raisedBy', 'name role')
     .populate('customer', 'name phone')
     .populate('runner', 'name phone rating')
@@ -78,7 +78,7 @@ exports.raiseDispute = async (req, res) => {
     });
   }
 
-  // Funds are locked for both in_progress and completed (completeErrandWallet not yet called)
+  // Funds are locked for both in_progress and completed (completeErrandCapacity not yet called)
   const fundsLockedAtDispute = ['in_progress', 'completed'].includes(errand.status);
 
   const dispute = await Dispute.create({
@@ -232,10 +232,10 @@ exports.resolveDispute = async (req, res) => {
     if (fundsLockedAtDispute) {
       switch (outcome) {
         case 'runner_at_fault': {
-          // Runner forfeits full collateral (errand.amount); customer gets refunded
+          // Runner forfeits reimbursement (errand.amount); customer is refunded into their wallet
           const penalty = errand.amount;
           actualRefund = refundAmount != null ? Math.min(refundAmount, penalty) : penalty;
-          await penalizeErrandWallet(runner, errand, penalty, session);
+          await penalizeRunnerCapacity(runner, errand, penalty, session);
           await refundToCustomer(customer, actualRefund, session);
           break;
         }
@@ -243,20 +243,24 @@ exports.resolveDispute = async (req, res) => {
         case 'customer_at_fault':
         case 'no_action':
           // Runner completed (or was not at fault) — release held funds + pay commission
-          await completeErrandWallet(runner, errand, session);
+          await completeErrandCapacity(runner, errand, session);
           actualRefund = 0;
           break;
 
         case 'partial': {
           const penalty = Math.min(penaltyAmount, errand.amount);
           actualRefund = refundAmount != null ? refundAmount : 0;
-          await penalizeErrandWallet(runner, errand, penalty, session);
+          await penalizeRunnerCapacity(runner, errand, penalty, session);
           if (actualRefund > 0) {
             await refundToCustomer(customer, actualRefund, session);
           }
           break;
         }
       }
+
+      // Working capital limit — decreases only for 'runner_at_fault' (see
+      // workingCapitalService); customer_at_fault/no_action/partial never affect it.
+      await recalculateWorkingCapital(runner, { trigger: 'cancelled', disputeOutcome: outcome, session });
     }
     // If fundsLockedAtDispute = false: funds were already released before dispute raised
     // (edge case — errand was confirmed before dispute). No wallet reversal needed.
@@ -280,6 +284,18 @@ exports.resolveDispute = async (req, res) => {
       await errand.save({ session });
     }
 
+    // Record the wallet credit for transaction-history synthesis — this is an
+    // in-app credit, not an M-Pesa payout, so no phone/mpesa fields are needed.
+    if (actualRefund > 0) {
+      await Payment.create([{
+        type:        'wallet_credit',
+        customer,
+        amount:      actualRefund,
+        status:      'completed',
+        completedAt: new Date(),
+      }], { session });
+    }
+
     await session.commitTransaction();
   } catch (err) {
     await session.abortTransaction();
@@ -291,43 +307,6 @@ exports.resolveDispute = async (req, res) => {
 
   const populated = await populateDispute(Dispute.findById(dispute._id));
 
-  // ── Trigger M-Pesa B2C refund to customer (background) ───────────────────
-  if (actualRefund > 0) {
-    setImmediate(async () => {
-      try {
-        const customerUser = await User.findById(customer).select('name phone');
-        if (customerUser?.phone) {
-          const normalizedPhone = normalizePhone(customerUser.phone);
-          const b2cResult = await initiateB2C({
-            phone:   normalizedPhone,
-            amount:  actualRefund,
-            remarks: `Dispute refund - ${errand.title}`,
-            occasion: `Dispute ${dispute._id}`,
-          });
-          await Payment.create({
-            type:     'dispute_refund',
-            customer: customer,
-            amount:   actualRefund,
-            phoneNumber: normalizedPhone,
-            status:   'pending',
-            mpesa: {
-              conversationId:          b2cResult.conversationId,
-              originatorConversationId: b2cResult.originatorConversationId,
-            },
-          });
-          logger.info('[Dispute] B2C refund initiated', {
-            disputeId: dispute._id,
-            customerId: customer,
-            amount: actualRefund,
-          });
-        }
-      } catch (err) {
-        // B2C failure is non-fatal — customer wallet was already credited
-        logger.error('[Dispute] B2C refund initiation failed', { error: err.message, disputeId: dispute._id });
-      }
-    });
-  }
-
   // ── Socket events ─────────────────────────────────────────────────────────
   getSocket().emitDisputeResolved(customer, runner, {
     disputeId: dispute._id,
@@ -337,6 +316,10 @@ exports.resolveDispute = async (req, res) => {
     refundAmount: actualRefund,
     notes: notes || null,
   });
+  if (fundsLockedAtDispute) {
+    getSocket().emitWalletUpdate(runner, 'capacity_update');
+    if (actualRefund > 0) getSocket().emitWalletUpdate(customer, 'customer_wallet_update');
+  }
 
   // ── Notifications ─────────────────────────────────────────────────────────
   notify.send({
@@ -389,24 +372,37 @@ exports.rejectDispute = async (req, res) => {
 
   const errand = dispute.errand;
 
-  // Restore runner's locked funds and revert errand to in_progress
-  if (dispute.fundsLockedAtDispute) {
-    await completeErrandWallet(dispute.runner, errand);
-  }
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  if (errand.status === 'disputed') {
-    errand.status = 'in_progress';
-    await errand.save();
-  }
+  try {
+    // Restore runner's locked funds and revert errand to in_progress
+    if (dispute.fundsLockedAtDispute) {
+      await completeErrandCapacity(dispute.runner, errand, session);
+    }
 
-  dispute.status = 'rejected';
-  dispute.resolution = {
-    outcome: 'no_action',
-    notes: notes?.trim() || 'Dispute rejected by admin.',
-    resolvedBy: req.user._id,
-    resolvedAt: new Date(),
-  };
-  await dispute.save();
+    if (errand.status === 'disputed') {
+      errand.status = 'in_progress';
+      await errand.save({ session });
+    }
+
+    dispute.status = 'rejected';
+    dispute.resolution = {
+      outcome: 'no_action',
+      notes: notes?.trim() || 'Dispute rejected by admin.',
+      resolvedBy: req.user._id,
+      resolvedAt: new Date(),
+    };
+    await dispute.save({ session });
+
+    await session.commitTransaction();
+  } catch (err) {
+    await session.abortTransaction();
+    logger.error('[Dispute] rejectDispute transaction failed', { error: err.message, disputeId: dispute._id });
+    return res.status(500).json({ status: 'fail', message: 'Rejection failed. Please try again.' });
+  } finally {
+    session.endSession();
+  }
 
   const populated = await populateDispute(Dispute.findById(dispute._id));
 
@@ -416,6 +412,9 @@ exports.rejectDispute = async (req, res) => {
     outcome: 'rejected',
     notes: notes || null,
   });
+  if (dispute.fundsLockedAtDispute) {
+    getSocket().emitWalletUpdate(dispute.runner, 'capacity_update');
+  }
 
   notify.send({
     userId: dispute.raisedBy,

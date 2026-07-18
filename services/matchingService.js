@@ -3,7 +3,7 @@
  *
  * Flow (happy path):
  *   runMatchingCycle(errandId)
- *     → fetchEligibleRunners(errand)   — DB query: available, enough float, in radius
+ *     → fetchEligibleRunners(errand)   — DB query: available, enough working capital, in radius
  *     → rankCandidates(runners)        — sort: distance → rating → cancelCount
  *     → offerToRunner(errand, runner)  — emit errand:request + 15s timeout
  *       ↓ runner accepts (REST /accept)
@@ -25,6 +25,7 @@ const Errand  = require('../models/Errand');
 const { haversineKm } = require('../utils/distanceCalculator');
 const notify  = require('./notifyService');
 const baseLogger = require('../utils/logger');
+const { recalculateWorkingCapital } = require('./workingCapitalService');
 
 const logger = baseLogger.child({ service: 'matching' });
 
@@ -147,7 +148,7 @@ const onRunnerAccepted = (errandId, runnerId) => {
 /**
  * Apply cancellation penalties and restart matching.
  * Called AFTER the controller has already:
- *   - reversed the wallet (cancelErrandWallet)
+ *   - reversed the wallet (cancelErrandCapacity)
  *   - set errand.status = 'pending', errand.runner = null (committed in a session)
  */
 const handleRunnerCancellation = async (errand, runnerId) => {
@@ -174,6 +175,10 @@ const handleRunnerCancellation = async (errand, runnerId) => {
   }
 
   await User.findByIdAndUpdate(runnerId, penaltyUpdates);
+
+  // ── Working capital limit — runner-initiated cancellation counts against
+  // the limit unless later marked excused by an admin (errand.excusedCancellation)
+  await recalculateWorkingCapital(runnerId, { trigger: 'cancelled', errand });
 
   // ── Reset matching offer state ─────────────────────────────────────────
   await Errand.findByIdAndUpdate(errand._id, {
@@ -228,7 +233,7 @@ const clearOfferTimeout = (errandId) => {
  * Eligibility:
  *   - role === 'runner', isActive, verificationStatus === 'approved', availability.status === 'available'
  *   - cooldownUntil is null or in the past
- *   - (floatBalance − heldFloat) >= errand.amount  (spec requirement)
+ *   - (workingCapital.limit − workingCapital.used) >= errand.amount  (spec requirement)
  *   - has reported a location AND is within MATCH_RADIUS_KM
  *   - not already in matchingState.offeredTo
  *
@@ -250,7 +255,7 @@ const fetchEligibleRunners = async (errand) => {
     (errand.matchingState.offeredTo || []).map((id) => id.toString()),
   );
 
-  // Single DB query — float check via $expr
+  // Single DB query — working capital check via $expr
   const runners = await User.find({
     role:     'runner',
     isActive: true,
@@ -262,7 +267,7 @@ const fetchEligibleRunners = async (errand) => {
     ],
     $expr: {
       $gte: [
-        { $subtract: ['$wallet.floatBalance', '$wallet.heldFloat'] },
+        { $subtract: ['$workingCapital.limit', '$workingCapital.used'] },
         errand.amount,
       ],
     },

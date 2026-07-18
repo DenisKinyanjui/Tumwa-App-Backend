@@ -48,14 +48,21 @@ const userSchema = new mongoose.Schema(
       default: 'customer',
     },
     wallet: {
-      // Runner float — working capital used to fund errands
-      floatBalance: { type: Number, default: 0, min: [0, 'Float cannot be negative'] },
-      // Portion of float currently locked for active errands
-      heldFloat:    { type: Number, default: 0, min: [0, 'Held float cannot be negative'] },
       // Runner earnings ready to withdraw (post-completion, post-commission)
       earnings:     { type: Number, default: 0, min: [0, 'Earnings cannot be negative'] },
       // Customer funds held in platform escrow until delivery confirmed
       trustBalance: { type: Number, default: 0, min: [0, 'Trust balance cannot be negative'] },
+    },
+    // Runner risk/trust limit — NOT a wallet balance, not withdrawable. Caps the
+    // total value of errands a runner may have active at once. Runners always
+    // use their own cash/M-Pesa/bank funds to shop; this only gates matching.
+    workingCapital: {
+      limit: { type: Number, default: 0, min: [0, 'Working capital limit cannot be negative'] },
+      used:  { type: Number, default: 0, min: [0, 'Working capital used cannot be negative'] },
+    },
+    // Customer reusable credit — refunds land here; spent before a new STK push.
+    customerWallet: {
+      balance: { type: Number, default: 0, min: [0, 'Customer wallet balance cannot be negative'] },
     },
     level: {
       type: Number,
@@ -226,14 +233,14 @@ userSchema.index({ role: 1, isActive: 1 });           // getUsers filter
 userSchema.index({ role: 1, createdAt: -1 });          // analytics / reports
 userSchema.index({ role: 1, completedErrands: -1, rating: -1 }); // top runners
 userSchema.index({ role: 1, 'trustWallet.total': -1 }); // wallet queries
-// Matching eligibility — role + availability status + float balance
-userSchema.index({ role: 1, 'availability.status': 1, 'wallet.floatBalance': -1 });
+// Matching eligibility — role + availability status + working capital limit
+userSchema.index({ role: 1, 'availability.status': 1, 'workingCapital.limit': -1 });
 // Cooldown expiry queries
 userSchema.index({ cooldownUntil: 1 }, { sparse: true });
 
-// Float not currently locked = what the runner can use for new errands
-userSchema.virtual('availableFloat').get(function () {
-  return this.wallet.floatBalance - this.wallet.heldFloat;
+// Remaining room under the runner's working capital limit
+userSchema.virtual('availableCapacity').get(function () {
+  return Math.max(0, (this.workingCapital?.limit || 0) - (this.workingCapital?.used || 0));
 });
 
 userSchema.virtual('disputeRate').get(function () {

@@ -3,14 +3,24 @@ const Errand = require('../models/Errand');
 const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
 const { creditEarnings } = require('../utils/walletUtils');
-const { initiateSTKPush, initiateB2C, normalizePhone } = require('../services/mpesaService');
+const { initiateB2C, normalizePhone } = require('../services/mpesaService');
 const logger = require('../utils/logger');
 
 // ── GET /api/wallet ───────────────────────────────────────────────────────────
+// Runner: working capital (risk limit) + earnings. Customer: reusable wallet credit.
 exports.getWallet = async (req, res) => {
-  const user = await User.findById(req.user._id).select('wallet');
+  const user = await User.findById(req.user._id).select('wallet workingCapital customerWallet role');
   if (!user) {
     return res.status(404).json({ status: 'fail', message: 'User not found' });
+  }
+
+  if (req.user.role === 'customer') {
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        customerWallet: { balance: user.customerWallet.balance },
+      },
+    });
   }
 
   const activeErrands = await Errand.countDocuments({
@@ -28,11 +38,7 @@ exports.getWallet = async (req, res) => {
       {
         $group: {
           _id: null,
-          total: {
-            $sum: {
-              $cond: ['$ownMoneyUsed', { $add: ['$amount', '$runnerReceives'] }, '$runnerReceives'],
-            },
-          },
+          total: { $sum: { $add: ['$amount', '$runnerReceives'] } },
         },
       },
     ]),
@@ -42,18 +48,19 @@ exports.getWallet = async (req, res) => {
     ]),
   ]);
 
-  const { floatBalance, heldFloat, earnings, trustBalance } = user.wallet;
-  const availableFloat = Math.max(0, floatBalance - heldFloat);
-  const withdrawable = availableFloat + earnings;
+  const { earnings, trustBalance } = user.wallet;
+  const { limit, used } = user.workingCapital;
 
   return res.status(200).json({
     status: 'success',
     data: {
-      floatBalance,
-      heldFloat,
-      availableFloat,
+      workingCapital: {
+        limit,
+        used,
+        available: Math.max(0, limit - used),
+      },
       earnings,
-      withdrawable,
+      withdrawable: earnings,
       trustBalance,
       activeErrands,
       monthlyEarnings: earningsAgg[0]?.total || 0,
@@ -64,15 +71,37 @@ exports.getWallet = async (req, res) => {
 
 // ── GET /api/wallet/transactions ──────────────────────────────────────────────
 exports.getTransactions = async (req, res) => {
-  const runnerId = req.user._id;
+  const userId = req.user._id;
+  const shortCode = (id) => id.toString().slice(-6).toUpperCase();
 
-  const [deposits, withdrawals, earnedErrands, penalizedDisputes] = await Promise.all([
-    Payment.find({ runner: runnerId, type: 'float_deposit', status: 'completed' })
-      .select('amount completedAt createdAt'),
+  if (req.user.role === 'customer') {
+    const walletCredits = await Payment.find({ customer: userId, type: 'wallet_credit', status: 'completed' })
+      .select('amount completedAt createdAt');
+
+    const transactions = walletCredits
+      .map((p) => ({
+        id: `credit-${p._id}`,
+        type: 'wallet_credit',
+        title: 'Wallet credit',
+        subtitle: 'Refund',
+        amount: p.amount,
+        direction: 'credit',
+        date: p.completedAt || p.createdAt,
+      }))
+      .filter((t) => t.date && t.amount > 0);
+
+    transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    return res.status(200).json({ status: 'success', data: transactions });
+  }
+
+  const runnerId = userId;
+
+  const [withdrawals, earnedErrands, penalizedDisputes] = await Promise.all([
     Payment.find({ runner: runnerId, type: 'withdrawal', status: 'completed' })
       .select('amount completedAt createdAt'),
     Errand.find({ runner: runnerId, isPaid: true })
-      .select('amount runnerReceives ownMoneyUsed paidAt confirmedAt'),
+      .select('amount runnerReceives paidAt confirmedAt'),
     Dispute.find({
       runner: runnerId,
       status: 'resolved',
@@ -80,18 +109,7 @@ exports.getTransactions = async (req, res) => {
     }).select('errand resolution'),
   ]);
 
-  const shortCode = (id) => id.toString().slice(-6).toUpperCase();
-
   const transactions = [
-    ...deposits.map((p) => ({
-      id: `deposit-${p._id}`,
-      type: 'topup',
-      title: 'Float top up',
-      subtitle: 'M-Pesa',
-      amount: p.amount,
-      direction: 'credit',
-      date: p.completedAt || p.createdAt,
-    })),
     ...withdrawals.map((p) => ({
       id: `withdrawal-${p._id}`,
       type: 'withdrawal',
@@ -106,7 +124,7 @@ exports.getTransactions = async (req, res) => {
       type: 'earning',
       title: 'Payment received',
       subtitle: `Errand #${shortCode(e._id)}`,
-      amount: e.ownMoneyUsed ? e.amount + e.runnerReceives : e.runnerReceives,
+      amount: e.amount + e.runnerReceives,
       direction: 'credit',
       date: e.paidAt || e.confirmedAt,
     })),
@@ -128,92 +146,9 @@ exports.getTransactions = async (req, res) => {
   return res.status(200).json({ status: 'success', data: transactions });
 };
 
-// ── POST /api/wallet/deposit-float ───────────────────────────────────────────
-exports.depositFloat = async (req, res) => {
-  const { amount, phone } = req.body;
-
-  if (!amount || !phone) {
-    return res.status(400).json({ status: 'fail', message: 'amount and phone are required' });
-  }
-
-  const numAmount = Number(amount);
-  if (isNaN(numAmount) || numAmount <= 0) {
-    return res.status(400).json({ status: 'fail', message: 'amount must be a positive number' });
-  }
-
-  if (numAmount < 10) {
-    return res.status(400).json({ status: 'fail', message: 'Minimum deposit is KES 10' });
-  }
-
-  let normalizedPhone;
-  try {
-    normalizedPhone = normalizePhone(phone);
-  } catch {
-    return res.status(400).json({ status: 'fail', message: 'Invalid phone number format' });
-  }
-
-  // Block duplicate pending deposits
-  const pendingDeposit = await Payment.findOne({
-    runner: req.user._id,
-    type: 'float_deposit',
-    status: 'pending',
-  });
-  if (pendingDeposit && pendingDeposit.expiresAt > new Date()) {
-    return res.status(409).json({
-      status: 'fail',
-      message: 'You already have a pending deposit. Check your M-Pesa prompt.',
-      paymentId: pendingDeposit._id,
-    });
-  }
-
-  const ceiled = Math.ceil(numAmount);
-
-  let stkResult;
-  try {
-    stkResult = await initiateSTKPush({
-      phone: normalizedPhone,
-      amount: ceiled,
-      accountReference: `FLOAT-${req.user._id.toString().slice(-6).toUpperCase()}`,
-      description: 'Tumwa Float Deposit',
-    });
-  } catch (err) {
-    logger.wallet.error('Float deposit STK push error', { userId: req.user._id, error: err.message });
-    return res.status(502).json({
-      status: 'fail',
-      message: err.message || 'Failed to initiate M-Pesa payment. Please try again.',
-    });
-  }
-
-  const payment = await Payment.create({
-    type: 'float_deposit',
-    runner: req.user._id,
-    amount: ceiled,
-    phoneNumber: normalizedPhone,
-    mpesa: {
-      checkoutRequestId: stkResult.checkoutRequestId,
-      merchantRequestId: stkResult.merchantRequestId,
-    },
-  });
-
-  logger.wallet.info('Float deposit initiated', {
-    paymentId: payment._id,
-    userId: req.user._id,
-    amount: ceiled,
-    checkoutRequestId: stkResult.checkoutRequestId,
-  });
-
-  return res.status(200).json({
-    status: 'success',
-    message: 'STK push sent. Enter your M-Pesa PIN to complete the deposit.',
-    data: {
-      paymentId: payment._id,
-      amount: ceiled,
-      phone: normalizedPhone,
-    },
-  });
-};
-
 // ── POST /api/wallet/withdraw ─────────────────────────────────────────────────
+// Earnings is the only withdrawable pool — working capital is a risk limit,
+// not money, and is never part of this calculation.
 exports.withdrawEarnings = async (req, res) => {
   const { amount, phone } = req.body;
 
@@ -235,14 +170,12 @@ exports.withdrawEarnings = async (req, res) => {
     return res.status(404).json({ status: 'fail', message: 'User not found' });
   }
 
-  const { floatBalance, heldFloat, earnings } = user.wallet;
-  const availableFloat = Math.max(0, floatBalance - heldFloat);
-  const withdrawable   = availableFloat + earnings;
+  const { earnings } = user.wallet;
 
-  if (numAmount > withdrawable) {
+  if (numAmount > earnings) {
     return res.status(400).json({
       status: 'fail',
-      message: `Cannot withdraw KES ${numAmount.toFixed(2)} — your withdrawable balance is KES ${withdrawable.toFixed(2)}`,
+      message: `Cannot withdraw KES ${numAmount.toFixed(2)} — your withdrawable balance is KES ${earnings.toFixed(2)}`,
     });
   }
 
@@ -269,13 +202,8 @@ exports.withdrawEarnings = async (req, res) => {
 
   const floored = Math.floor(numAmount);
 
-  // Optimistic debit — drain earnings first, then floatBalance
-  const fromEarnings = Math.min(floored, earnings);
-  const fromFloat    = floored - fromEarnings;
-  const walletInc    = {};
-  if (fromEarnings > 0) walletInc['wallet.earnings']     = -fromEarnings;
-  if (fromFloat    > 0) walletInc['wallet.floatBalance'] = -fromFloat;
-  await User.findByIdAndUpdate(req.user._id, { $inc: walletInc });
+  // Optimistic debit
+  await User.findByIdAndUpdate(req.user._id, { $inc: { 'wallet.earnings': -floored } });
 
   let b2cResult;
   try {

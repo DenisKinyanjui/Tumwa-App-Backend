@@ -38,5 +38,6 @@ router.post('/:id/retry-match', restrictTo('customer'), errandController.retryMa
 
 // ─── Admin ───────────────────────────────────────────────────────────────────
 router.patch('/:id/admin-assign', restrictTo('admin'), errandController.adminAssignRunner);
+router.patch('/:id/excuse-cancellation', restrictTo('admin'), errandController.excuseCancellation);
 
 module.exports = router;

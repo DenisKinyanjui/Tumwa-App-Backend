@@ -2,15 +2,18 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const Errand = require('../models/Errand');
 const User = require('../models/User');
+const Payment = require('../models/Payment');
 const r2Service = require('../services/r2Service');
 const {
   calcFees,
-  hasEnoughFloat,
-  acceptErrandWallet,
-  completeErrandWallet,
-  cancelErrandWallet,
-  penalizeErrandWallet,
+  hasEnoughCapacity,
+  acceptErrandCapacity,
+  completeErrandCapacity,
+  cancelErrandCapacity,
+  penalizeRunnerCapacity,
+  refundToCustomer,
 } = require('../utils/walletUtils');
+const { recalculateWorkingCapital, reverseFaultPenalty } = require('../services/workingCapitalService');
 const { haversineKm } = require('../utils/distanceCalculator');
 const { attachProofPhotoUrl } = require('../utils/errandPresign');
 const {
@@ -27,7 +30,7 @@ const conversationService = require('../services/conversationService');
 const populateErrand = (query) =>
   query
     .populate('customer', 'name phone')
-    .populate('runner', 'name phone rating wallet');
+    .populate('runner', 'name phone rating wallet workingCapital');
 
 // Attaches each runner's profile picture (User.photoKey) as a short-lived
 // signed URL (runner.photoUrl) so the customer app can show it. Only called
@@ -99,55 +102,107 @@ exports.createErrand = async (req, res) => {
 
 // PATCH /api/errands/:id/cancel
 exports.cancelErrand = async (req, res) => {
-  const errand = await Errand.findById(req.params.id);
-  if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  const isOwner = errand.customer.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === 'admin';
+  try {
+    const errand = await Errand.findById(req.params.id).session(session);
+    if (!errand) {
+      await session.abortTransaction();
+      return res.status(404).json({ status: 'fail', message: 'Errand not found' });
+    }
 
-  if (!isOwner && !isAdmin) {
-    return res.status(403).json({ status: 'fail', message: 'Access denied' });
-  }
+    const isOwner = errand.customer.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
 
-  const cancellableByCustomer = ['pending', 'marketplace', 'assigned'];
-  const cancellableByAdmin    = ['pending', 'marketplace', 'assigned', 'in_progress'];
-  const allowed = isAdmin ? cancellableByAdmin : cancellableByCustomer;
+    if (!isOwner && !isAdmin) {
+      await session.abortTransaction();
+      return res.status(403).json({ status: 'fail', message: 'Access denied' });
+    }
 
-  if (!allowed.includes(errand.status)) {
-    return res.status(400).json({
-      status: 'fail',
-      message: `Cannot cancel an errand with status '${errand.status}'`,
+    const cancellableByCustomer = ['pending', 'marketplace', 'assigned'];
+    const cancellableByAdmin    = ['pending', 'marketplace', 'assigned', 'in_progress'];
+    const allowed = isAdmin ? cancellableByAdmin : cancellableByCustomer;
+
+    if (!allowed.includes(errand.status)) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        status: 'fail',
+        message: `Cannot cancel an errand with status '${errand.status}'`,
+      });
+    }
+
+    // Reverse working capital + escrow if a runner was assigned
+    if (errand.runner && !errand.capacityReleased) {
+      await cancelErrandCapacity(errand.runner, errand, session);
+      errand.capacityReleased = true;
+    }
+
+    // Refund the customer in full — no service was rendered, so the platform
+    // keeps no fee on a cancelled errand. Credited to the Customer Wallet
+    // (reusable in-app credit), not paid out via M-Pesa.
+    let refundAmount = 0;
+    if (errand.isPaid) {
+      refundAmount = errand.totalCustomerPays;
+      await refundToCustomer(errand.customer, refundAmount, session);
+      await Payment.create([{
+        type:        'wallet_credit',
+        customer:    errand.customer,
+        amount:      refundAmount,
+        status:      'completed',
+        completedAt: new Date(),
+      }], { session });
+    }
+
+    errand.status      = 'cancelled';
+    errand.cancelledAt = new Date();
+    // This handler is only reachable for customer/admin-initiated cancellations
+    // (runners cancel via runnerCancelErrand) — never affects the working capital limit.
+    errand.cancelledBy = isAdmin ? 'admin' : 'customer';
+    await errand.save({ session });
+
+    await session.commitTransaction();
+
+    conversationService.setReadonly(errand._id, {
+      reason: 'cancelled',
+      until: conversationService.thirtyDaysFromNow(),
     });
+
+    if (errand.runner) {
+      emitWalletUpdate(errand.runner, 'capacity_update');
+      notify.send({
+        userId:       errand.runner,
+        title:        'Errand Cancelled',
+        message:      `"${errand.title}" was cancelled. Working capital restored.`,
+        type:         'errand',
+        relatedId:    errand._id,
+        relatedModel: 'Errand',
+        eventName:    'errand-cancelled',
+        eventData:    { errandId: errand._id, title: errand.title },
+      });
+    }
+
+    if (refundAmount > 0) {
+      emitWalletUpdate(errand.customer, 'customer_wallet_update');
+      notify.send({
+        userId:       errand.customer,
+        title:        'Errand Cancelled — Refunded',
+        message:      `"${errand.title}" was cancelled. KES ${refundAmount} credited to your wallet.`,
+        type:         'errand',
+        relatedId:    errand._id,
+        relatedModel: 'Errand',
+        eventName:    'errand-cancelled',
+        eventData:    { errandId: errand._id, title: errand.title, refundAmount },
+      });
+    }
+
+    res.status(200).json({ status: 'success', message: 'Errand cancelled', data: { errand, refundAmount } });
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
   }
-
-  // Reverse wallet operations if runner was assigned
-  if (errand.runner && !errand.floatReleased) {
-    await cancelErrandWallet(errand.runner, errand);
-  }
-
-  errand.status      = 'cancelled';
-  errand.cancelledAt = new Date();
-  await errand.save();
-
-  conversationService.setReadonly(errand._id, {
-    reason: 'cancelled',
-    until: conversationService.thirtyDaysFromNow(),
-  });
-
-  if (errand.runner) {
-    notify.send({
-      userId:       errand.runner,
-      title:        'Errand Cancelled',
-      message:      `"${errand.title}" was cancelled. Float restored.`,
-      type:         'errand',
-      relatedId:    errand._id,
-      relatedModel: 'Errand',
-      eventName:    'errand-cancelled',
-      eventData:    { errandId: errand._id, title: errand.title },
-    });
-  }
-
-  res.status(200).json({ status: 'success', message: 'Errand cancelled', data: { errand } });
 };
 
 // PATCH /api/errands/:id/dispute
@@ -234,21 +289,24 @@ exports.assignRunner = async (req, res) => {
       });
     }
 
-    // Float check: zero float is allowed (own-money mode)
-    const availableFloat = runner.wallet.floatBalance - runner.wallet.heldFloat;
-    if (availableFloat < 0) {
+    // Working capital gate — hard-enforced on every acceptance path, no
+    // "own money" bypass: a runner may never exceed their remaining capacity.
+    if (!hasEnoughCapacity(runner, errand.amount)) {
       await session.abortTransaction();
-      return res.status(400).json({ status: 'fail', message: 'Wallet in invalid state' });
+      const available = runner.workingCapital.limit - runner.workingCapital.used;
+      return res.status(400).json({
+        status:  'fail',
+        message: `Insufficient working capital. Available: KES ${available.toFixed(2)}, required: KES ${errand.amount}`,
+      });
     }
 
     // Update wallet atomically (inside session so it rolls back if errand.save fails)
-    const { floatUsed, ownMoneyUsed } = await acceptErrandWallet(runner._id, errand, session);
+    await acceptErrandCapacity(runner._id, errand, session);
 
     errand.runner       = runner._id;
     errand.status       = 'assigned';
     errand.assignedAt   = new Date();
-    errand.floatUsed    = floatUsed;
-    errand.ownMoneyUsed = ownMoneyUsed;
+    errand.capacityUsed = true;
     await errand.save({ session });
 
     await session.commitTransaction();
@@ -256,6 +314,7 @@ exports.assignRunner = async (req, res) => {
     const populated = await populateErrand(Errand.findById(errand._id));
 
     emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+    emitWalletUpdate(runner._id, 'capacity_update');
     conversationService.getOrCreateForErrand(populated);
 
     notify.send({
@@ -269,24 +328,22 @@ exports.assignRunner = async (req, res) => {
       eventData:    { errandId: errand._id, runner: { id: runner._id, name: runner.name } },
     });
 
-    const floatMessage = ownMoneyUsed
-      ? `You accepted "${errand.title}". Using own money (no float held).`
-      : `You accepted "${errand.title}". KES ${errand.amount} float locked. Customer funds (KES ${errand.trustHeld}) in escrow.`;
+    const message = `You accepted "${errand.title}". KES ${errand.amount} locked against your working capital. Customer funds (KES ${errand.trustHeld}) in escrow.`;
 
     notify.send({
       userId:       runner._id,
       title:        'Errand Accepted',
-      message:      floatMessage,
+      message,
       type:         'errand',
       relatedId:    errand._id,
       relatedModel: 'Errand',
       eventName:    'errand-assigned',
-      eventData:    { errandId: errand._id, floatUsed, ownMoneyUsed, trustHeld: errand.trustHeld },
+      eventData:    { errandId: errand._id, trustHeld: errand.trustHeld },
     });
 
     res.status(200).json({
       status:  'success',
-      message: floatMessage,
+      message,
       data:    { errand: populated },
     });
   } catch (err) {
@@ -347,22 +404,21 @@ exports.acceptErrand = async (req, res) => {
       });
     }
 
-    const availableFloat = runner.wallet.floatBalance - runner.wallet.heldFloat;
-    if (availableFloat < errand.amount) {
+    if (!hasEnoughCapacity(runner, errand.amount)) {
       await session.abortTransaction();
+      const available = runner.workingCapital.limit - runner.workingCapital.used;
       return res.status(400).json({
         status:  'fail',
-        message: `Insufficient float. Available: KES ${availableFloat.toFixed(2)}, required: KES ${errand.amount}`,
+        message: `Insufficient working capital. Available: KES ${available.toFixed(2)}, required: KES ${errand.amount}`,
       });
     }
 
-    const { floatUsed, ownMoneyUsed } = await acceptErrandWallet(runner._id, errand, session);
+    await acceptErrandCapacity(runner._id, errand, session);
 
     errand.runner       = runner._id;
     errand.status       = 'assigned';
     errand.assignedAt   = new Date();
-    errand.floatUsed    = floatUsed;
-    errand.ownMoneyUsed = ownMoneyUsed;
+    errand.capacityUsed = true;
     // Clear matching state — assignment complete
     errand.matchingState.status                  = 'idle';
     errand.matchingState.currentOffer.runnerId   = null;
@@ -370,8 +426,8 @@ exports.acceptErrand = async (req, res) => {
     errand.matchingState.currentOffer.expiresAt  = null;
     await errand.save({ session });
 
-    // availability.status was already updated by acceptErrandWallet — 'busy'
-    // only if this errand exhausted the runner's remaining float.
+    // availability.status was already updated by acceptErrandCapacity — 'busy'
+    // only if this errand exhausted the runner's remaining capacity.
 
     await session.commitTransaction();
 
@@ -381,6 +437,7 @@ exports.acceptErrand = async (req, res) => {
     const populated = await populateErrand(Errand.findById(errand._id));
 
     emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+    emitWalletUpdate(runner._id, 'capacity_update');
     conversationService.getOrCreateForErrand(populated);
 
     notify.send({
@@ -394,24 +451,22 @@ exports.acceptErrand = async (req, res) => {
       eventData:    { errandId: errand._id, runner: { id: runner._id, name: runner.name } },
     });
 
-    const floatMsg = ownMoneyUsed
-      ? `You accepted "${errand.title}" (own-money mode — no float held).`
-      : `You accepted "${errand.title}". KES ${errand.amount} float locked.`;
+    const message = `You accepted "${errand.title}". KES ${errand.amount} locked against your working capital.`;
 
     notify.send({
       userId:       runner._id,
       title:        'Errand Accepted',
-      message:      floatMsg,
+      message,
       type:         'errand',
       relatedId:    errand._id,
       relatedModel: 'Errand',
       eventName:    'errand-accepted-runner',
-      eventData:    { errandId: errand._id, floatUsed, ownMoneyUsed },
+      eventData:    { errandId: errand._id },
     });
 
     return res.status(200).json({
       status:  'success',
-      message: floatMsg,
+      message,
       data:    { errand: populated },
     });
   } catch (err) {
@@ -485,23 +540,30 @@ exports.runnerCancelErrand = async (req, res) => {
       });
     }
 
+    const runnerId = errand.runner;
+
     // Reverse wallet — must happen before we clear runner from errand
-    if (!errand.floatReleased) {
-      await cancelErrandWallet(errand.runner, errand, session);
+    if (!errand.capacityReleased) {
+      await cancelErrandCapacity(runnerId, errand, session);
+      errand.capacityReleased = true;
     }
 
     // Reset errand to pending so it can be re-matched
-    errand.status       = 'pending';
-    errand.runner       = null;
-    errand.assignedAt   = null;
-    errand.floatUsed    = false;
-    errand.ownMoneyUsed = false;
-    errand.cancelledBy  = 'runner'; // audit trail
+    errand.status              = 'pending';
+    errand.runner              = null;
+    errand.assignedAt          = null;
+    errand.capacityUsed        = false;
+    errand.cancelledBy         = 'runner'; // audit trail
+    errand.cancelledByRunnerId = runnerId; // retained even after runner is cleared/reassigned
     await errand.save({ session });
 
+    // Working capital limit decrease is applied by handleRunnerCancellation
+    // below (fire-and-forget, alongside the cancelCount/cooldown penalties) —
+    // not here, to avoid double-applying the decrease.
     await session.commitTransaction();
 
     conversationService.archiveForErrand(errand._id);
+    emitWalletUpdate(runnerId, 'capacity_update');
 
     // Apply penalties + notify customer + restart matching (all outside the transaction)
     setImmediate(() => handleRunnerCancellation(errand, req.user._id.toString()));
@@ -687,21 +749,24 @@ exports.confirmDelivery = async (req, res) => {
       return res.status(403).json({ status: 'fail', message: 'Only the customer can confirm delivery' });
     }
 
-    if (errand.floatReleased) {
+    if (errand.capacityReleased) {
       await session.abortTransaction();
       return res.status(400).json({ status: 'fail', message: 'Payment already released' });
     }
 
-    // Release escrow and credit runner earnings atomically
-    await completeErrandWallet(errand.runner, errand, session);
+    // Release escrow, restore working capital, and credit runner earnings atomically
+    await completeErrandCapacity(errand.runner, errand, session);
 
-    await User.findByIdAndUpdate(errand.runner, { $inc: { completedErrands: 1 } }).session(session);
+    await User.findByIdAndUpdate(errand.runner, { $inc: { completedErrands: 1 } }, { session });
 
-    errand.status        = 'confirmed';
-    errand.confirmedAt   = new Date();
-    errand.floatReleased = true;
-    errand.isPaid        = true;
-    errand.paidAt        = new Date();
+    // Auto-increase eligibility reads the post-increment completedErrands above
+    await recalculateWorkingCapital(errand.runner, { trigger: 'completed', session });
+
+    errand.status            = 'confirmed';
+    errand.confirmedAt       = new Date();
+    errand.capacityReleased  = true;
+    errand.isPaid            = true;
+    errand.paidAt            = new Date();
     await errand.save({ session });
 
     // Runner is free to accept new errands
@@ -718,20 +783,22 @@ exports.confirmDelivery = async (req, res) => {
     emitErrandUpdate(populated, errand.customer, errand.runner);
     emitWalletUpdate(errand.runner, 'earnings_released');
 
+    const earningsCredit = errand.amount + errand.runnerReceives;
+
     notify.send({
       userId:       errand.runner,
       title:        'Payment Released! 🎉',
-      message:      `"${errand.title}" confirmed. KES ${errand.runnerReceives} added to your earnings.`,
+      message:      `"${errand.title}" confirmed. KES ${earningsCredit} (reimbursement + commission) added to your earnings.`,
       type:         'errand',
       relatedId:    errand._id,
       relatedModel: 'Errand',
       eventName:    'errand-confirmed',
-      eventData:    { errandId: errand._id, runnerReceives: errand.runnerReceives },
+      eventData:    { errandId: errand._id, earningsCredit, runnerReceives: errand.runnerReceives },
     });
 
     res.status(200).json({
       status:  'success',
-      message: `Delivery confirmed. KES ${errand.runnerReceives} released to runner.`,
+      message: `Delivery confirmed. KES ${earningsCredit} released to runner.`,
       data:    { errand: populated },
     });
   } catch (err) {
@@ -766,14 +833,22 @@ exports.adminAssignRunner = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'Target user is not a runner' });
   }
 
+  if (!hasEnoughCapacity(runner, errand.amount)) {
+    const available = runner.workingCapital.limit - runner.workingCapital.used;
+    return res.status(400).json({
+      status:  'fail',
+      message: `Insufficient working capital. Available: KES ${available.toFixed(2)}, required: KES ${errand.amount}`,
+    });
+  }
+
   // Reverse previous runner's wallet if reassigning
   const isReassignment = errand.runner && errand.runner.toString() !== runnerId;
-  if (isReassignment && !errand.floatReleased) {
+  if (isReassignment && !errand.capacityReleased) {
     const previousRunnerId = errand.runner;
 
     conversationService.archiveForErrand(errand._id);
 
-    await cancelErrandWallet(previousRunnerId, errand);
+    await cancelErrandCapacity(previousRunnerId, errand);
     // Previous runner is no longer tied to this errand — free them up
     await User.findByIdAndUpdate(previousRunnerId, {
       'availability.status': 'available',
@@ -791,21 +866,21 @@ exports.adminAssignRunner = async (req, res) => {
     });
   }
 
-  const { floatUsed, ownMoneyUsed } = await acceptErrandWallet(runner._id, errand);
+  await acceptErrandCapacity(runner._id, errand);
 
   errand.runner       = runner._id;
   errand.status       = 'assigned';
   errand.assignedAt   = new Date();
-  errand.floatUsed    = floatUsed;
-  errand.ownMoneyUsed = ownMoneyUsed;
+  errand.capacityUsed = true;
   await errand.save();
 
-  // availability.status was already updated by acceptErrandWallet — 'busy'
-  // only if this errand exhausted the runner's remaining float.
+  // availability.status was already updated by acceptErrandCapacity — 'busy'
+  // only if this errand exhausted the runner's remaining capacity.
 
   const populated = await populateErrand(Errand.findById(errand._id));
 
   emitErrandUpdate(populated.toObject(), errand.customer, runner._id);
+  emitWalletUpdate(runner._id, 'capacity_update');
   conversationService.getOrCreateForErrand(populated);
 
   notify.send({
@@ -819,25 +894,73 @@ exports.adminAssignRunner = async (req, res) => {
     eventData:    { errandId: errand._id, runner: { id: runner._id, name: runner.name } },
   });
 
-  const floatMessage = ownMoneyUsed
-    ? `An admin assigned you to "${errand.title}" (own-money mode — no float held).`
-    : `An admin assigned you to "${errand.title}". KES ${errand.amount} float locked.`;
-
   notify.send({
     userId:       runner._id,
     title:        'Errand Assigned',
-    message:      floatMessage,
+    message:      `An admin assigned you to "${errand.title}". KES ${errand.amount} locked against your working capital.`,
     type:         'errand',
     relatedId:    errand._id,
     relatedModel: 'Errand',
     eventName:    'errand-assigned',
-    eventData:    { errandId: errand._id, floatUsed, ownMoneyUsed, trustHeld: errand.trustHeld },
+    eventData:    { errandId: errand._id, trustHeld: errand.trustHeld },
   });
 
   res.status(200).json({
     status:  'success',
     message: `Runner assigned by admin.`,
     data:    { errand: populated },
+  });
+};
+
+// PATCH /api/errands/:id/excuse-cancellation
+// Admin marks a runner-initiated cancellation as not the runner's fault (e.g.
+// customer unreachable). Reverses the working-capital-limit decrease already
+// applied at cancellation time (see matchingService.handleRunnerCancellation).
+exports.excuseCancellation = async (req, res) => {
+  const errand = await Errand.findById(req.params.id);
+  if (!errand) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
+
+  if (errand.cancelledBy !== 'runner') {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Only runner-initiated cancellations can be marked excused',
+    });
+  }
+
+  if (errand.excusedCancellation) {
+    return res.status(400).json({ status: 'fail', message: 'This cancellation is already marked excused' });
+  }
+
+  if (!errand.cancelledByRunnerId) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'No cancelling runner recorded on this errand — cannot reverse a penalty',
+    });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    errand.excusedCancellation = true;
+    await errand.save({ session });
+
+    // errand.runner may since have been reassigned to a different runner — use
+    // the retained cancelledByRunnerId, not errand.runner, to reverse the decrease.
+    await reverseFaultPenalty(errand.cancelledByRunnerId, session);
+
+    await session.commitTransaction();
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
+
+  res.status(200).json({
+    status:  'success',
+    message: 'Cancellation marked excused. Working capital limit restored.',
+    data:    { errand },
   });
 };
 

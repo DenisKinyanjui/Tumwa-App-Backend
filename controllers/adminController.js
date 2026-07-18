@@ -50,7 +50,7 @@ exports.getUsers = async (req, res) => {
     ];
   }
 
-  const allowedSorts = ['createdAt', 'rating', 'completedErrands', 'name', 'trustWallet.total'];
+  const allowedSorts = ['createdAt', 'rating', 'completedErrands', 'name', 'trustWallet.total', 'workingCapital.limit'];
   const sortField = allowedSorts.includes(sortBy) ? sortBy : 'createdAt';
   const sortDir = order === 'asc' ? 1 : -1;
 

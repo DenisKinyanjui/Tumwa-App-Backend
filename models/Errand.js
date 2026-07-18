@@ -59,10 +59,9 @@ const errandSchema = new mongoose.Schema(
     platformEarns:         { type: Number, default: 0 }, // platformCustomerFee + platformRunnerFee
     trustHeld:             { type: Number, default: 0 }, // amount held in escrow (totalCustomerPays - platformCustomerFee upfront)
 
-    // ── Float tracking ────────────────────────────────────────────────────────
-    floatUsed:    { type: Boolean, default: false }, // runner used float wallet
-    ownMoneyUsed: { type: Boolean, default: false }, // runner used own money (float = 0)
-    floatReleased:{ type: Boolean, default: false }, // trust released after completion
+    // ── Working capital tracking ────────────────────────────────────────────────
+    capacityUsed:     { type: Boolean, default: false }, // errand.amount was locked against runner's working capital
+    capacityReleased: { type: Boolean, default: false },  // capacity + trust released after completion/cancellation
 
     status: {
       type: String,
@@ -114,6 +113,12 @@ const errandSchema = new mongoose.Schema(
     // runner cancel resets errand back to pending for re-matching)
     cancelledBy:  { type: String, enum: ['customer', 'runner', 'admin', null], default: null },
     cancelReason: { type: String, default: null },
+    // Retained even after `runner` is cleared/reassigned, so an admin can later
+    // identify and excuse the runner who actually cancelled.
+    cancelledByRunnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Admin-settable: a runner-initiated cancellation that wasn't the runner's fault
+    // (e.g. customer unreachable). Excludes it from working-capital-limit penalties.
+    excusedCancellation: { type: Boolean, default: false },
   },
   {
     timestamps: true,

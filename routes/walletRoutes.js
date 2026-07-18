@@ -1,15 +1,15 @@
 const express = require('express');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
-const { getWallet, getTransactions, depositFloat, withdrawEarnings } = require('../controllers/walletController');
+const { getWallet, getTransactions, withdrawEarnings } = require('../controllers/walletController');
 
 const router = express.Router();
 
-// All wallet routes require a logged-in runner
-router.use(protect, restrictTo('runner'));
+router.use(protect);
 
-router.get('/', getWallet);
-router.get('/transactions', getTransactions);
-router.post('/deposit-float', depositFloat);
-router.post('/withdraw', withdrawEarnings);
+// Runners see working capital + earnings; customers see their wallet credit.
+router.get('/', restrictTo('runner', 'customer'), getWallet);
+router.get('/transactions', restrictTo('runner', 'customer'), getTransactions);
+// Withdrawal draws from earnings only — runner-only.
+router.post('/withdraw', restrictTo('runner'), withdrawEarnings);
 
 module.exports = router;
