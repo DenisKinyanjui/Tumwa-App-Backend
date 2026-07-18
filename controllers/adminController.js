@@ -8,8 +8,9 @@ const Rating = require('../models/Rating');
 const RunnerVerification = require('../models/RunnerVerification');
 const logger = require('../utils/logger');
 const { creditFunds } = require('../utils/walletUtils');
-const { emitToUser, emitToRoom } = require('../socket/socketManager'); // kept for broadcast endpoint
+const { emitToUser, emitToRoom, emitWalletUpdate } = require('../socket/socketManager');
 const { buildReport } = require('../services/adminReportService');
+const { getDefaultLimit } = require('../services/workingCapitalService');
 const notify = require('../services/notifyService');
 const { presignVerification } = require('../utils/verificationPresign');
 const { attachProofPhotoUrl } = require('../utils/errandPresign');
@@ -178,6 +179,16 @@ exports.updateUser = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'No valid fields to update' });
   }
 
+  const before = await User.findById(req.params.id).select('role workingCapital.limit');
+  if (!before) return res.status(404).json({ status: 'fail', message: 'User not found' });
+
+  // Promoting a customer to runner — seed a starting limit so they aren't
+  // stuck at 0 capacity (mirrors the same seeding done at registration time).
+  const isPromotionToRunner = updates.role === 'runner' && before.role !== 'runner';
+  if (isPromotionToRunner && before.workingCapital.limit === 0) {
+    updates['workingCapital.limit'] = await getDefaultLimit();
+  }
+
   const user = await User.findByIdAndUpdate(req.params.id, updates, {
     new: true,
     runValidators: true,
@@ -201,6 +212,43 @@ exports.updateUser = async (req, res) => {
       eventData: { isActive: user.isActive },
     });
   }
+
+  res.status(200).json({ status: 'success', data: { user } });
+};
+
+// PATCH /api/admin/users/:id/working-capital
+// Manually overrides a runner's Working Capital Limit (the risk ceiling used
+// by the matching engine) — NOT their `used` value, which is auto-tracked
+// from currently active errands and must never be hand-edited.
+exports.setWorkingCapitalLimit = async (req, res) => {
+  const { limit } = req.body;
+  const numLimit = Number(limit);
+
+  if (limit === undefined || isNaN(numLimit) || numLimit < 0) {
+    return res.status(400).json({ status: 'fail', message: 'limit must be a non-negative number' });
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
+  if (user.role !== 'runner') {
+    return res.status(400).json({ status: 'fail', message: 'Working capital only applies to runners' });
+  }
+
+  user.workingCapital.limit = numLimit;
+  await user.save();
+
+  emitWalletUpdate(user._id, 'capacity_update');
+
+  notify.send({
+    userId: user._id,
+    title: 'Working Capital Updated',
+    message: `An admin set your working capital limit to KES ${numLimit}.`,
+    type: 'admin',
+    relatedId: user._id,
+    relatedModel: 'User',
+    eventName: 'working-capital-updated',
+    eventData: { limit: numLimit },
+  });
 
   res.status(200).json({ status: 'success', data: { user } });
 };

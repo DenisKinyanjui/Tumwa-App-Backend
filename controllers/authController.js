@@ -6,6 +6,7 @@ const User = require('../models/User');
 const termiiService = require('../services/termiiService');
 const emailService = require('../services/emailService');
 const r2Service = require('../services/r2Service');
+const { getDefaultLimit } = require('../services/workingCapitalService');
 const { JWT, COOKIE, GOOGLE } = require('../config/security');
 const logger = require('../utils/logger');
 
@@ -117,6 +118,9 @@ exports.register = async (req, res) => {
 
   const userData = { name, phone, password, role: assignedRole };
   if (email) userData.email = email;
+  if (assignedRole === 'runner') {
+    userData.workingCapital = { limit: await getDefaultLimit() };
+  }
 
   const user = await User.create(userData);
   const accessToken = signAccessToken(user._id, user.role);

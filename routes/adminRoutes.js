@@ -3,6 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const disputeController = require('../controllers/disputeController');
 const legalController = require('../controllers/legalController');
+const settingsController = require('../controllers/settingsController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 
 // All admin routes require a valid JWT AND admin role
@@ -13,6 +14,7 @@ router.use(restrictTo('admin'));
 router.get('/users', adminController.getUsers);
 router.get('/users/:id', adminController.getUser);
 router.patch('/users/:id', adminController.updateUser);
+router.patch('/users/:id/working-capital', adminController.setWorkingCapitalLimit);
 router.delete('/users/:id', adminController.deleteUser);
 
 // ── Runner Verifications ──────────────────────────────────────────────────────
@@ -48,5 +50,9 @@ router.post('/broadcast', adminController.broadcast);
 // ── Legal content ─────────────────────────────────────────────────────────────
 router.get('/legal/terms', legalController.getTerms);
 router.put('/legal/terms', legalController.updateTerms);
+
+// ── App settings ──────────────────────────────────────────────────────────────
+router.get('/settings', settingsController.getSettings);
+router.patch('/settings', settingsController.updateSettings);
 
 module.exports = router;

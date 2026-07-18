@@ -5,9 +5,12 @@
  * handled separately in utils/walletUtils.js's accept/complete/cancel functions —
  * this service only ever touches workingCapital.limit.
  *
- * Increase: on completion, every N completions (env-configurable), if rating
- * and dispute rate are healthy, step the limit up — capped by the runner's
- * current level's walletLimit (utils/levelUtils.js) and an absolute max.
+ * Config (default limit, steps, thresholds) is admin-editable at runtime via
+ * the AppSettings singleton (see services/settingsService.js) — not env vars.
+ *
+ * Increase: on completion, every N completions, if rating and dispute rate
+ * are healthy, step the limit up — capped by the runner's current level's
+ * walletLimit (utils/levelUtils.js) and the admin-configured max.
  *
  * Decrease: only when a runner is at fault — an unexcused runner-initiated
  * cancellation, or a dispute resolved 'runner_at_fault'. Customer/admin
@@ -16,14 +19,10 @@
 
 const User = require('../models/User');
 const { computeLevel } = require('../utils/levelUtils');
+const { getSettings } = require('./settingsService');
 
-const DEFAULT_LIMIT            = Number(process.env.DEFAULT_WORKING_CAPITAL_LIMIT) || 500;
-const MAX_LIMIT                = Number(process.env.WORKING_CAPITAL_MAX_LIMIT) || 50000;
-const INCREASE_STEP            = Number(process.env.WORKING_CAPITAL_INCREASE_STEP) || 500;
-const DECREASE_STEP            = Number(process.env.WORKING_CAPITAL_DECREASE_STEP) || 1000;
-const INCREASE_CHECK_INTERVAL  = Number(process.env.WORKING_CAPITAL_INCREASE_CHECK_INTERVAL) || 5;
-const MIN_RATING_FOR_INCREASE  = Number(process.env.WORKING_CAPITAL_MIN_RATING_FOR_INCREASE) || 4.5;
-const MAX_DISPUTE_RATE_FOR_INCREASE = Number(process.env.WORKING_CAPITAL_MAX_DISPUTE_RATE_FOR_INCREASE) || 0.05;
+const getDefaultLimit = async () => (await getSettings()).workingCapital.defaultLimit;
+const getMaxLimit = async () => (await getSettings()).workingCapital.maxLimit;
 
 /**
  * Recalculate a runner's working capital limit after an errand lifecycle event.
@@ -40,18 +39,19 @@ const recalculateWorkingCapital = async (runnerId, { trigger, errand = null, dis
   const runner = await User.findById(runnerId).session(session);
   if (!runner) throw new Error('Runner not found');
 
+  const { workingCapital: cfg } = await getSettings();
   const level = computeLevel(runner);
-  const ceiling = level.walletLimit == null ? MAX_LIMIT : Math.min(level.walletLimit, MAX_LIMIT);
+  const ceiling = level.walletLimit == null ? cfg.maxLimit : Math.min(level.walletLimit, cfg.maxLimit);
 
   if (trigger === 'completed') {
     const eligible =
       runner.completedErrands > 0 &&
-      runner.completedErrands % INCREASE_CHECK_INTERVAL === 0 &&
-      runner.rating >= MIN_RATING_FOR_INCREASE &&
-      runner.disputeRate <= MAX_DISPUTE_RATE_FOR_INCREASE;
+      runner.completedErrands % cfg.increaseCheckInterval === 0 &&
+      runner.rating >= cfg.minRatingForIncrease &&
+      runner.disputeRate <= cfg.maxDisputeRateForIncrease;
 
     if (eligible) {
-      runner.workingCapital.limit = Math.min(runner.workingCapital.limit + INCREASE_STEP, ceiling);
+      runner.workingCapital.limit = Math.min(runner.workingCapital.limit + cfg.increaseStep, ceiling);
     }
   }
 
@@ -61,7 +61,7 @@ const recalculateWorkingCapital = async (runnerId, { trigger, errand = null, dis
       disputeOutcome === 'runner_at_fault';
 
     if (runnerAtFault) {
-      runner.workingCapital.limit = Math.max(runner.workingCapital.limit - DECREASE_STEP, 0);
+      runner.workingCapital.limit = Math.max(runner.workingCapital.limit - cfg.decreaseStep, 0);
     }
   }
 
@@ -72,23 +72,24 @@ const recalculateWorkingCapital = async (runnerId, { trigger, errand = null, dis
 /**
  * Reverse a previously-applied at-fault decrease — used when an admin marks a
  * runner's cancellation as excused after the fact (errand.excusedCancellation).
- * Restores DECREASE_STEP, capped at the runner's level ceiling.
+ * Restores decreaseStep, capped at the runner's level ceiling.
  */
 const reverseFaultPenalty = async (runnerId, session) => {
   const runner = await User.findById(runnerId).session(session);
   if (!runner) throw new Error('Runner not found');
 
+  const { workingCapital: cfg } = await getSettings();
   const level = computeLevel(runner);
-  const ceiling = level.walletLimit == null ? MAX_LIMIT : Math.min(level.walletLimit, MAX_LIMIT);
+  const ceiling = level.walletLimit == null ? cfg.maxLimit : Math.min(level.walletLimit, cfg.maxLimit);
 
-  runner.workingCapital.limit = Math.min(runner.workingCapital.limit + DECREASE_STEP, ceiling);
+  runner.workingCapital.limit = Math.min(runner.workingCapital.limit + cfg.decreaseStep, ceiling);
   await runner.save({ session });
   return runner.workingCapital;
 };
 
 module.exports = {
-  DEFAULT_LIMIT,
-  MAX_LIMIT,
+  getDefaultLimit,
+  getMaxLimit,
   recalculateWorkingCapital,
   reverseFaultPenalty,
 };

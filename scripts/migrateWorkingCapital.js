@@ -11,10 +11,13 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Errand = require('../models/Errand');
 const { computeLevel } = require('../utils/levelUtils');
-const { DEFAULT_LIMIT, MAX_LIMIT } = require('../services/workingCapitalService');
+const { getDefaultLimit, getMaxLimit } = require('../services/workingCapitalService');
 
 async function run() {
   await mongoose.connect(process.env.MONGO_URI);
+
+  const DEFAULT_LIMIT = await getDefaultLimit();
+  const MAX_LIMIT = await getMaxLimit();
 
   // ── Customers: seed customerWallet.balance = 0 for everyone ────────────────
   const customerResult = await User.updateMany(
