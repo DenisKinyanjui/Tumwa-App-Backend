@@ -1,45 +1,90 @@
-const multer = require('multer');
 const User = require('../models/User');
 const RunnerVerification = require('../models/RunnerVerification');
 const r2Service = require('../services/r2Service');
 const logger = require('../utils/logger');
 const notify = require('../services/notifyService');
 
-// ── Multer setup ──────────────────────────────────────────────────────────────
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
-  fileFilter: (_req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image files are allowed'));
-    }
-    cb(null, true);
-  },
-});
-
-// Export the multer middleware so the router can apply it
-exports.uploadMiddleware = upload.fields([
-  { name: 'idFront',      maxCount: 1 },
-  { name: 'idBack',       maxCount: 1 },
-  { name: 'selfie',       maxCount: 1 },
-  // Public profile picture — either the selfie above re-picked by the client,
-  // or a separate gallery photo. Stored independently on User.photoKey; the
-  // KYC selfie itself stays private and is never shown to other users.
-  { name: 'profilePhoto', maxCount: 1 },
-]);
-
 // ── Allowed values ────────────────────────────────────────────────────────────
 
 const TRANSPORT_OPTIONS = ['motorbike', 'bicycle', 'car', 'on_foot', 'public_transport'];
+
+// ── Upload slots ──────────────────────────────────────────────────────────────
+// Files never pass through this server — the client PUTs them straight to R2
+// using the presigned URLs from getUploadUrls below, then submit() only ever
+// sees the resulting object keys. This keeps the request body tiny, which
+// matters because our hosting platform hard-caps request bodies at 4.5MB and
+// four full-size photos in one multipart request routinely blew past that.
+const UPLOAD_SLOTS = {
+  // Private KYC documents — never shown to other users.
+  idFront: { folder: (userId) => `runner-verification/${userId}`, label: 'id-front' },
+  idBack:  { folder: (userId) => `runner-verification/${userId}`, label: 'id-back' },
+  selfie:  { folder: (userId) => `runner-verification/${userId}`, label: 'selfie' },
+  // Public profile picture — either the selfie above re-picked by the client,
+  // or a separate gallery photo. Stored independently on User.photoKey.
+  profilePhoto: { folder: (userId) => `profile-photos/${userId}`, label: 'photo' },
+};
+
+const keyBelongsToUser = (key, folder) =>
+  typeof key === 'string' && key.startsWith(`${folder}/`);
+
+// ── POST /api/verification/upload-urls ────────────────────────────────────────
+// Public — same trust model as submit() below (identified by phone, called
+// before login during onboarding). Issues short-lived presigned R2 PUT URLs
+// so the client can upload photo bytes directly to R2, then call submit()
+// with just the resulting keys.
+exports.getUploadUrls = async (req, res) => {
+  const { phone, files } = req.body;
+
+  const errors = [];
+  if (!phone?.trim()) errors.push('Phone number is required');
+
+  const slots = files && typeof files === 'object' ? Object.keys(files) : [];
+  if (slots.length === 0) errors.push('At least one file is required');
+  for (const slot of slots) {
+    if (!UPLOAD_SLOTS[slot]) errors.push(`Unknown file slot: ${slot}`);
+    else if (typeof files[slot] !== 'string' || !files[slot].startsWith('image/')) {
+      errors.push(`Only image files are allowed for ${slot}`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return res.status(422).json({ status: 'fail', message: 'Validation failed', errors });
+  }
+
+  const user = await User.findOne({ phone: phone.trim() });
+  if (!user) {
+    return res.status(404).json({ status: 'fail', message: 'No account found with this phone number' });
+  }
+  if (user.role !== 'runner') {
+    return res.status(403).json({ status: 'fail', message: 'Identity verification is only for runners' });
+  }
+  if (!user.phoneVerified) {
+    return res.status(403).json({ status: 'fail', message: 'Phone number must be verified first' });
+  }
+
+  const entries = await Promise.all(
+    slots.map(async (slot) => {
+      const { folder, label } = UPLOAD_SLOTS[slot];
+      const mimeType = files[slot];
+      const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+      const key = `${folder(user._id)}/${label}-${Date.now()}.${ext}`;
+      const uploadUrl = await r2Service.getSignedUploadUrl(key, mimeType);
+      return [slot, { key, uploadUrl }];
+    }),
+  );
+
+  res.status(200).json({ status: 'success', data: Object.fromEntries(entries) });
+};
 
 // ── POST /api/verification/submit ─────────────────────────────────────────────
 // Public — runner is not yet logged in (called right after phone verification).
 // Identified by phone number; requires phoneVerified=true.
 
 exports.submit = async (req, res) => {
-  const { phone, nationalId, meansOfTransport, areasOfOperation, reuseSelfieAsProfilePhoto } = req.body;
-  const files = req.files;
+  const {
+    phone, nationalId, meansOfTransport, areasOfOperation, reuseSelfieAsProfilePhoto,
+    idFrontKey, idBackKey, selfieKey, profilePhotoKey,
+  } = req.body;
   // When the client re-picks the same selfie as the profile picture, it sends
   // this flag instead of re-uploading the identical image bytes a second time
   // (which was needlessly doubling the upload size / time for that case).
@@ -54,18 +99,13 @@ exports.submit = async (req, res) => {
     errors.push('A valid means of transport is required');
   }
 
-  let areas = [];
-  try {
-    areas = JSON.parse(areasOfOperation || '[]');
-    if (!Array.isArray(areas) || areas.length === 0) errors.push('At least one area of operation is required');
-  } catch {
-    errors.push('Invalid areas of operation format');
-  }
+  const areas = Array.isArray(areasOfOperation) ? areasOfOperation : [];
+  if (areas.length === 0) errors.push('At least one area of operation is required');
 
-  if (!files?.idFront?.[0])  errors.push('ID front photo is required');
-  if (!files?.idBack?.[0])   errors.push('ID back photo is required');
-  if (!files?.selfie?.[0])   errors.push('Selfie photo is required');
-  if (!reuseSelfie && !files?.profilePhoto?.[0]) errors.push('A profile picture is required');
+  if (!idFrontKey) errors.push('ID front photo is required');
+  if (!idBackKey)  errors.push('ID back photo is required');
+  if (!selfieKey)  errors.push('Selfie photo is required');
+  if (!reuseSelfie && !profilePhotoKey) errors.push('A profile picture is required');
 
   if (errors.length > 0) {
     return res.status(422).json({ status: 'fail', message: 'Validation failed', errors });
@@ -83,34 +123,30 @@ exports.submit = async (req, res) => {
     return res.status(403).json({ status: 'fail', message: 'Phone number must be verified first' });
   }
 
+  // The only way to have written anything under these prefixes is via a
+  // presigned URL this same user was just issued by getUploadUrls above.
+  const verificationFolder = `runner-verification/${user._id}`;
+  const profileFolder = `profile-photos/${user._id}`;
+  if (
+    !keyBelongsToUser(idFrontKey, verificationFolder) ||
+    !keyBelongsToUser(idBackKey, verificationFolder) ||
+    !keyBelongsToUser(selfieKey, verificationFolder) ||
+    (!reuseSelfie && !keyBelongsToUser(profilePhotoKey, profileFolder))
+  ) {
+    return res.status(422).json({ status: 'fail', message: 'Validation failed', errors: ['Uploaded file references are invalid'] });
+  }
+
   // Check for existing submission
   const existing = await RunnerVerification.findOne({ user: user._id });
   if (existing && existing.status !== 'rejected') {
     return res.status(409).json({ status: 'fail', message: 'Verification already submitted' });
   }
 
-  // ── Upload images to R2 ───────────────────────────────────────────────────────
-  const folder = `runner-verification/${user._id}`;
-  const previousPhotoKey = user.photoKey;
-
-  const [idFrontKey, idBackKey, selfieKey, uploadedPhotoKey] = await Promise.all([
-    r2Service.uploadFile(files.idFront[0].buffer, folder, 'id-front', files.idFront[0].mimetype),
-    r2Service.uploadFile(files.idBack[0].buffer, folder, 'id-back',  files.idBack[0].mimetype),
-    r2Service.uploadFile(files.selfie[0].buffer, folder, 'selfie',   files.selfie[0].mimetype),
-    reuseSelfie
-      ? Promise.resolve(null)
-      : r2Service.uploadFile(
-          files.profilePhoto[0].buffer,
-          `profile-photos/${user._id}`,
-          'photo',
-          files.profilePhoto[0].mimetype,
-        ),
-  ]);
-
   // Reusing the selfie copies its R2 key onto photoKey rather than sharing a
   // live reference — the KYC selfieKey stays private on RunnerVerification;
   // nothing downstream ever derives a profile picture from it again.
-  const photoKey = reuseSelfie ? selfieKey : uploadedPhotoKey;
+  const photoKey = reuseSelfie ? selfieKey : profilePhotoKey;
+  const previousPhotoKey = user.photoKey;
 
   // ── Save verification record ──────────────────────────────────────────────────
   if (existing) {

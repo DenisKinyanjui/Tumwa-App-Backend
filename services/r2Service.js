@@ -37,6 +37,23 @@ exports.uploadFile = async (buffer, folder, label, mimeType) => {
 };
 
 /**
+ * Generate a short-lived signed URL the client can PUT a file's raw bytes to
+ * directly, bypassing our API server entirely (needed for uploads that would
+ * otherwise blow past the hosting platform's request body size limit).
+ * @param {string} key - R2 object key to write to
+ * @param {string} mimeType - e.g. 'image/jpeg'
+ * @param {number} [expiresIn] - seconds until the link expires (default 10 min)
+ */
+exports.getSignedUploadUrl = async (key, mimeType, expiresIn = 600) => {
+  const command = new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+    ContentType: mimeType,
+  });
+  return getSignedUrl(s3, command, { expiresIn });
+};
+
+/**
  * Generate a short-lived signed URL to read a private R2 object.
  * @param {string} key - R2 object key
  * @param {number} [expiresIn] - seconds until the link expires (default 15 min)
