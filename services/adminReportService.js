@@ -5,7 +5,7 @@ const Dispute = require('../models/Dispute');
 const Rating = require('../models/Rating');
 
 /**
- * Return the start date for a reporting period relative to now.
+ * Return the start date for a reporting period relative to now
  * period: 'day' | 'week' | 'month' | 'quarter' | 'year'
  */
 const getPeriodStart = (period) => {
