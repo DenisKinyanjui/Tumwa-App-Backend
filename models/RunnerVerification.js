@@ -8,9 +8,13 @@ const runnerVerificationSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    // These fields are populated when a runner submits their documents
+    // (see verificationController.submit, which enforces its own presence
+    // checks). They're left optional at the schema level so an admin can
+    // approve a runner who never submitted anything — see
+    // adminController.approveVerification.
     nationalId: {
       type: String,
-      required: [true, 'National ID is required'],
       trim: true,
       minlength: [5, 'National ID must be at least 5 characters'],
       maxlength: [20, 'National ID cannot exceed 20 characters'],
@@ -19,19 +23,18 @@ const runnerVerificationSchema = new mongoose.Schema(
     // generated on demand (see utils/verificationPresign.js).
     idFrontKey: {
       type: String,
-      required: [true, 'ID front photo is required'],
+      default: null,
     },
     idBackKey: {
       type: String,
-      required: [true, 'ID back photo is required'],
+      default: null,
     },
     selfieKey: {
       type: String,
-      required: [true, 'Selfie photo is required'],
+      default: null,
     },
     meansOfTransport: {
       type: String,
-      required: [true, 'Means of transport is required'],
       enum: {
         values: ['motorbike', 'bicycle', 'car', 'on_foot', 'public_transport'],
         message: 'Invalid means of transport',
@@ -39,11 +42,7 @@ const runnerVerificationSchema = new mongoose.Schema(
     },
     areasOfOperation: {
       type: [String],
-      required: true,
-      validate: {
-        validator: (v) => Array.isArray(v) && v.length > 0,
-        message: 'At least one area of operation is required',
-      },
+      default: [],
     },
     status: {
       type: String,

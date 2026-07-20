@@ -107,14 +107,25 @@ exports.getVerification = async (req, res) => {
 };
 
 // PATCH /api/admin/verifications/:userId/approve
+// Upserts so an admin can approve a runner who never submitted any
+// documents — the resulting record just has empty document fields, which
+// the admin panel renders as "not uploaded".
 exports.approveVerification = async (req, res) => {
   const { notes } = req.body;
+
+  const existing = await RunnerVerification.findOne({ user: req.params.userId });
+  if (!existing) {
+    const user = await User.findById(req.params.userId).select('role').lean();
+    if (!user || user.role !== 'runner') {
+      return res.status(404).json({ status: 'fail', message: 'Runner not found' });
+    }
+  }
+
   const verificationDoc = await RunnerVerification.findOneAndUpdate(
     { user: req.params.userId },
     { status: 'approved', adminNotes: notes || null, reviewedAt: new Date() },
-    { new: true },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
   ).lean();
-  if (!verificationDoc) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
 
   await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'approved' });
 
