@@ -4,6 +4,7 @@ const adminController = require('../controllers/adminController');
 const disputeController = require('../controllers/disputeController');
 const legalController = require('../controllers/legalController');
 const settingsController = require('../controllers/settingsController');
+const locationController = require('../controllers/locationController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 
 // All admin routes require a valid JWT AND admin role
@@ -54,5 +55,11 @@ router.put('/legal/terms', legalController.updateTerms);
 // ── App settings ──────────────────────────────────────────────────────────────
 router.get('/settings', settingsController.getSettings);
 router.patch('/settings', settingsController.updateSettings);
+
+// ── Service areas (runner "areas of operation" list) ────────────────────────────
+router.get('/locations', locationController.adminList);
+router.post('/locations', locationController.adminCreate);
+router.patch('/locations/:id', locationController.adminUpdate);
+router.delete('/locations/:id', locationController.adminDelete);
 
 module.exports = router;

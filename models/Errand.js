@@ -43,6 +43,17 @@ const errandSchema = new mongoose.Schema(
         lat: { type: Number },
         lng: { type: Number },
       },
+      // Best-effort structured geocoding captured when the customer picked
+      // each point (see CreateErrand.tsx) — neighbourhood/town level and the
+      // broader county/administrative level. Null for errands created before
+      // this existed, or when the client's geocoder didn't resolve one.
+      // Lets analytics match errands to admin-managed zones by name rather
+      // than fuzzy-matching the free-text `address` (see
+      // analyticsService.buildRegionExpr).
+      pickupLocality:    { type: String, default: null },
+      pickupRegion:      { type: String, default: null },
+      deliveryLocality:  { type: String, default: null },
+      deliveryRegion:    { type: String, default: null },
     },
     // ── Pricing ──────────────────────────────────────────────────────────────
     amount: {

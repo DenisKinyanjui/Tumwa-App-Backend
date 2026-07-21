@@ -85,10 +85,16 @@ const paymentSchema = new mongoose.Schema(
         pickup: {
           lat: { type: Number, default: null },
           lng: { type: Number, default: null },
+          // Best-effort structured geocoding from the client — see
+          // Errand.location for how these get used downstream.
+          locality: { type: String, default: null },
+          region:   { type: String, default: null },
         },
         delivery: {
           lat: { type: Number, default: null },
           lng: { type: Number, default: null },
+          locality: { type: String, default: null },
+          region:   { type: String, default: null },
         },
       },
       amount: { type: Number, default: null },

@@ -36,6 +36,7 @@ const profileRoutes = require('./routes/profileRoutes');
 const addressRoutes = require('./routes/addressRoutes');
 const favoriteRoutes = require('./routes/favoriteRoutes');
 const conversationRoutes = require('./routes/conversationRoutes');
+const locationRoutes = require('./routes/locationRoutes');
 
 const { initSocket } = require('./socket/socketManager');
 const { sweepExpiredReadonly } = require('./services/conversationService');
@@ -109,6 +110,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/favorites', favoriteRoutes);
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/locations', locationRoutes);
 
 // Admin routes — stricter rate limiter applied on top
 app.use('/api/admin', adminLimiter, adminRoutes);

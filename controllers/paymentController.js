@@ -5,6 +5,7 @@ const User = require('../models/User');
 const { creditEarnings, calcFees } = require('../utils/walletUtils');
 const { emitPaymentEvent, emitWalletUpdate } = require('../socket/socketManager');
 const { runMatchingCycle } = require('../services/matchingService');
+const { registerZonesFromErrand } = require('../services/serviceAreaService');
 const notify = require('../services/notifyService');
 const logger = require('../utils/logger');
 const {
@@ -29,8 +30,16 @@ const createErrandFromFundedSource = async ({ customerId, errandData, session })
     description: errandData.description,
     location: {
       address:             errandData.location.address,
-      coordinates:         errandData.location.pickup ?? null,
-      deliveryCoordinates: errandData.location.delivery ?? null,
+      coordinates:         errandData.location.pickup
+        ? { lat: errandData.location.pickup.lat, lng: errandData.location.pickup.lng }
+        : null,
+      deliveryCoordinates: errandData.location.delivery
+        ? { lat: errandData.location.delivery.lat, lng: errandData.location.delivery.lng }
+        : null,
+      pickupLocality:      errandData.location.pickup?.locality ?? null,
+      pickupRegion:        errandData.location.pickup?.region ?? null,
+      deliveryLocality:    errandData.location.delivery?.locality ?? null,
+      deliveryRegion:      errandData.location.delivery?.region ?? null,
     },
     amount:      errandData.amount,
     isPaid:      true,
@@ -121,6 +130,7 @@ exports.initiatePayment = async (req, res) => {
       await session.commitTransaction();
 
       setImmediate(() => runMatchingCycle(errand._id.toString()));
+      setImmediate(() => registerZonesFromErrand(errand));
 
       emitWalletUpdate(req.user._id, 'customer_wallet_update');
 
@@ -356,6 +366,7 @@ exports.handleSTKCallback = async (req, res) => {
   });
 
   setImmediate(() => runMatchingCycle(errand._id.toString()));
+  setImmediate(() => registerZonesFromErrand(errand));
 
   notify.send({
     userId:    payment.customer,

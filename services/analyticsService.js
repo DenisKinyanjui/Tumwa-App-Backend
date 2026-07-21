@@ -3,6 +3,8 @@ const User = require('../models/User');
 const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
 const Rating = require('../models/Rating');
+const ServiceArea = require('../models/ServiceArea');
+const { escapeRegex } = require('../utils/regex');
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -282,6 +284,50 @@ const getOverview = async (since, to) => {
 
 // ── Errand analytics ──────────────────────────────────────────────────────────
 
+// Prefer the structured `location.pickupLocality` captured at booking time
+// (see CreateErrand.tsx's reverse-geocode → Errand.pickupLocality) — an
+// exact, case-insensitive match against an admin-managed zone name. Older
+// errands (booked before this existed) or ones whose geocoder didn't
+// resolve a locality fall back to fuzzy-matching the free-text
+// `location.address` for whichever zone name it contains, same as before.
+// Bucketing into "Other" only happens once both signals miss. Takes the
+// area name list explicitly (rather than querying inside) so callers that
+// already have it — e.g. locationController computing per-zone counts —
+// don't re-fetch it.
+const buildRegionExpr = (areaNames) => {
+  if (areaNames.length === 0) {
+    return { $ifNull: ['$location.address', 'Unknown'] };
+  }
+
+  const exactLocalityBranches = areaNames.map((name) => ({
+    case: {
+      $eq: [
+        { $toLower: { $ifNull: ['$location.pickupLocality', ''] } },
+        name.toLowerCase(),
+      ],
+    },
+    then: name,
+  }));
+
+  const addressSubstringBranches = areaNames.map((name) => ({
+    case: {
+      $regexMatch: {
+        input: { $ifNull: ['$location.address', ''] },
+        regex: escapeRegex(name),
+        options: 'i',
+      },
+    },
+    then: name,
+  }));
+
+  return {
+    $switch: {
+      branches: [...exactLocalityBranches, ...addressSubstringBranches],
+      default: 'Other',
+    },
+  };
+};
+
 const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
   const { status, runner, amountMin, amountMax } = filters;
 
@@ -294,6 +340,11 @@ const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
     if (amountMin) baseMatch.amount.$gte = parseFloat(amountMin);
     if (amountMax) baseMatch.amount.$lte = parseFloat(amountMax);
   }
+
+  // All areas regardless of status — a retired zone's historical errands
+  // should still attribute to its name rather than fall into "Other".
+  const areaNames = (await ServiceArea.find().select('name').lean()).map((a) => a.name);
+  const regionExpr = buildRegionExpr(areaNames);
 
   const [timeSeries, byStatus, topLocations, completionTrend] = await Promise.all([
     // Line chart — errands over time
@@ -335,10 +386,10 @@ const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
       { $project: { label: '$_id', count: 1, totalValue: { $round: ['$totalValue', 2] }, _id: 0 } },
     ]),
 
-    // Bar chart — top 10 locations by errand count
+    // Bar chart — top 10 regions by errand count
     Errand.aggregate([
       { $match: baseMatch },
-      { $group: { _id: '$location.address', count: { $sum: 1 }, totalValue: { $sum: '$amount' } } },
+      { $group: { _id: regionExpr, count: { $sum: 1 }, totalValue: { $sum: '$amount' } } },
       { $sort: { count: -1 } },
       { $limit: 10 },
       { $project: { label: '$_id', count: 1, totalValue: { $round: ['$totalValue', 2] }, _id: 0 } },
@@ -413,7 +464,7 @@ const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
       },
       topLocations: {
         type: 'bar',
-        title: 'Top 10 Errand Locations',
+        title: 'Top 10 Errand Regions',
         data: topLocations,
       },
       completionTrend: {
@@ -980,4 +1031,5 @@ module.exports = {
   getRunnerAnalytics,
   getCustomerAnalytics,
   getDisputeAnalytics,
+  buildRegionExpr,
 };

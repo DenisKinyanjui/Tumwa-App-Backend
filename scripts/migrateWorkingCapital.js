@@ -1,9 +1,9 @@
 // One-time migration: replaces the deposited Float Wallet with the Working
-// Capital Limit model. Seeds every runner's workingCapital.limit/used and every
-// user's customerWallet.balance. Does NOT delete wallet.floatBalance/heldFloat
-// data — those schema paths are simply no longer read/written by the app, so
-// the raw fields are left in Mongo as harmless orphan data (cheap insurance
-// for finance reconciliation, avoids an irreversible destructive step).
+// Capital Limit model. Seeds every existing runner's workingCapital.limit/used.
+// Does NOT touch wallet.floatBalance/heldFloat (left as harmless orphan data)
+// or customerWallet.balance (a new field with a schema default of 0 that
+// Mongoose already applies in memory for any document that doesn't have it
+// stored — no explicit backfill needed).
 //
 // Run with: node scripts/migrateWorkingCapital.js
 require('dotenv').config();
@@ -18,13 +18,6 @@ async function run() {
 
   const DEFAULT_LIMIT = await getDefaultLimit();
   const MAX_LIMIT = await getMaxLimit();
-
-  // ── Customers: seed customerWallet.balance = 0 for everyone ────────────────
-  const customerResult = await User.updateMany(
-    {},
-    { $set: { 'customerWallet.balance': 0 } },
-  );
-  console.log(`Seeded customerWallet.balance for ${customerResult.modifiedCount} user(s)`);
 
   // ── Runners: seed workingCapital.limit from level (or default) ─────────────
   const runners = await User.find({ role: 'runner' }).select(
