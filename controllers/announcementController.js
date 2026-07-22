@@ -4,6 +4,7 @@ const AnnouncementView = require('../models/AnnouncementView');
 const r2Service = require('../services/r2Service');
 const logger = require('../utils/logger');
 const { getAnalytics, maybeNotifyActivation } = require('../services/announcementService');
+const auditLogService = require('../services/auditLogService');
 
 // ── Pagination helper (mirrors adminController's / notificationCampaignController's) ──
 const paginate = (query) => {
@@ -142,6 +143,11 @@ exports.create = async (req, res) => {
   if (announcement.active) await maybeNotifyActivation(announcement);
 
   logger.info('Announcement created', { announcementId: announcement._id, active: announcement.active, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Created', module: 'Announcements', severity: 'Low',
+    target: { type: 'Announcement', id: announcement._id, label: announcement.title },
+    changes: { before: null, after: { title: announcement.title, active: announcement.active } },
+  });
 
   const withImage = await attachImageUrl(announcement.toObject({ virtuals: true }));
   res.status(201).json({ status: 'success', data: { announcement: withImage } });
@@ -155,6 +161,7 @@ exports.update = async (req, res) => {
   const previousImage = announcement.image;
   const previousStart = announcement.startDate?.getTime();
   const previousEnd = announcement.endDate?.getTime();
+  const beforeSnapshot = { title: announcement.title, active: announcement.active };
 
   applyPayload(announcement, req.body);
   if (req.body.activate !== undefined) announcement.active = !!req.body.activate;
@@ -175,6 +182,11 @@ exports.update = async (req, res) => {
   }
 
   logger.info('Announcement updated', { announcementId: announcement._id, active: announcement.active, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Announcements', severity: 'Low',
+    target: { type: 'Announcement', id: announcement._id, label: announcement.title },
+    changes: { before: beforeSnapshot, after: { title: announcement.title, active: announcement.active } },
+  });
 
   const withImage = await attachImageUrl(announcement.toObject({ virtuals: true }));
   res.status(200).json({ status: 'success', data: { announcement: withImage } });
@@ -192,6 +204,11 @@ exports.remove = async (req, res) => {
   }
 
   logger.info('Announcement deleted', { announcementId: announcement._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Deleted', module: 'Announcements', severity: 'Medium',
+    target: { type: 'Announcement', id: announcement._id, label: announcement.title },
+    changes: { before: { title: announcement.title, active: announcement.active }, after: null },
+  });
   res.status(200).json({ status: 'success', data: null });
 };
 
@@ -205,6 +222,11 @@ exports.activate = async (req, res) => {
   await maybeNotifyActivation(announcement);
 
   logger.info('Announcement activated', { announcementId: announcement._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Activated', module: 'Announcements', severity: 'Low',
+    target: { type: 'Announcement', id: announcement._id, label: announcement.title },
+    changes: { before: { active: false }, after: { active: true } },
+  });
 
   const withImage = await attachImageUrl(announcement.toObject({ virtuals: true }));
   res.status(200).json({ status: 'success', data: { announcement: withImage } });
@@ -221,6 +243,12 @@ exports.deactivate = async (req, res) => {
   await announcement.save();
 
   logger.info('Announcement deactivated', { announcementId: announcement._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Announcements', severity: 'Low',
+    target: { type: 'Announcement', id: announcement._id, label: announcement.title },
+    changes: { before: { active: true }, after: { active: false } },
+    reason: 'Deactivated',
+  });
 
   const withImage = await attachImageUrl(announcement.toObject({ virtuals: true }));
   res.status(200).json({ status: 'success', data: { announcement: withImage } });
@@ -255,6 +283,11 @@ exports.duplicate = async (req, res) => {
   });
 
   logger.info('Announcement duplicated', { sourceId: source._id, copyId: copy._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Created', module: 'Announcements', severity: 'Low',
+    target: { type: 'Announcement', id: copy._id, label: copy.title },
+    changes: { before: null, after: { title: copy.title, duplicatedFrom: source._id } },
+  });
 
   const withImage = await attachImageUrl(copy.toObject({ virtuals: true }));
   res.status(201).json({ status: 'success', data: { announcement: withImage } });

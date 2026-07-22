@@ -4,6 +4,7 @@ const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
 const RunnerVerification = require('../models/RunnerVerification');
 const ServiceArea = require('../models/ServiceArea');
+const AuditLog = require('../models/AuditLog');
 const { parseDateRange, buildRegionExpr } = require('./analyticsService');
 
 // Generated files are capped at this many data rows — the row-level tables
@@ -514,6 +515,57 @@ const getLocationsData = async (filters) => {
   };
 };
 
+// ── Audit Logs ─────────────────────────────────────────────────────────────────
+const getAuditLogsData = async (filters) => {
+  const dateFilter = buildDateFilter(filters.dateFrom, filters.dateTo);
+
+  const filter = {};
+  if (dateFilter) filter.createdAt = dateFilter;
+  if (filters.module) filter.module = filters.module;
+  if (filters.action) filter.action = filters.action;
+  if (filters.severity) filter.severity = filters.severity;
+  if (filters.adminId) filter['actor.id'] = filters.adminId;
+
+  const [rows, byStatus, bySeverity] = await Promise.all([
+    AuditLog.find(filter).sort({ createdAt: -1 }).limit(MAX_ROWS).lean(),
+    AuditLog.aggregate([{ $match: filter }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    AuditLog.aggregate([{ $match: filter }, { $match: { severity: { $in: ['High', 'Critical'] } } }, { $count: 'count' }]),
+  ]);
+
+  const statusMap = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
+
+  return {
+    summary: {
+      totalEvents: rows.length,
+      successful: statusMap.success ?? 0,
+      failed: statusMap.failed ?? 0,
+      highRiskEvents: bySeverity[0]?.count ?? 0,
+    },
+    rows: rows.map((r) => ({
+      time: r.createdAt,
+      admin: r.actor?.name ?? '',
+      module: r.module,
+      action: r.action,
+      target: r.target?.label ?? '',
+      severity: r.severity,
+      ip: r.ip ?? '',
+      status: r.status,
+      reason: r.reason ?? '',
+    })),
+    columns: [
+      { key: 'time', label: 'Time' },
+      { key: 'admin', label: 'Admin' },
+      { key: 'module', label: 'Module' },
+      { key: 'action', label: 'Action' },
+      { key: 'target', label: 'Target' },
+      { key: 'severity', label: 'Severity' },
+      { key: 'ip', label: 'IP Address' },
+      { key: 'status', label: 'Status' },
+      { key: 'reason', label: 'Reason' },
+    ],
+  };
+};
+
 const HANDLERS = {
   revenue: getRevenueData,
   finance: getTransactionsData,
@@ -525,6 +577,7 @@ const HANDLERS = {
   withdrawals: getWithdrawalsData,
   disputes: getDisputesData,
   locations: getLocationsData,
+  audit_logs: getAuditLogsData,
 };
 
 /**

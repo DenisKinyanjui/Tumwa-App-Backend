@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const {
   resolveAudienceUsers, dispatchCampaign, getSystemEventStats,
 } = require('../services/notificationCampaignService');
+const auditLogService = require('../services/auditLogService');
 
 // ── Pagination helper (mirrors adminController's) ────────────────────────────
 const paginate = (query) => {
@@ -155,6 +156,11 @@ exports.create = async (req, res) => {
   }
 
   logger.info('Notification campaign created', { campaignId: campaign._id, status: campaign.status, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Created', module: 'Notifications', severity: 'Low',
+    target: { type: 'NotificationCampaign', id: campaign._id, label: campaign.title },
+    changes: { before: null, after: { title: campaign.title, status: campaign.status, audience: campaign.audience } },
+  });
 
   const [withOpened] = await attachOpenedCounts([campaign.toObject()]);
   const withBanner = await attachBannerUrl(withOpened);
@@ -171,6 +177,7 @@ exports.update = async (req, res) => {
   }
 
   const previousBannerKey = campaign.bannerImageKey;
+  const beforeSnapshot = { title: campaign.title, status: campaign.status, audience: campaign.audience };
   const { action, scheduledAt } = req.body;
   applyPayload(campaign, req.body);
 
@@ -195,6 +202,11 @@ exports.update = async (req, res) => {
   }
 
   logger.info('Notification campaign updated', { campaignId: campaign._id, status: campaign.status, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Notifications', severity: 'Low',
+    target: { type: 'NotificationCampaign', id: campaign._id, label: campaign.title },
+    changes: { before: beforeSnapshot, after: { title: campaign.title, status: campaign.status, audience: campaign.audience } },
+  });
 
   const [withOpened] = await attachOpenedCounts([campaign.toObject()]);
   const withBanner = await attachBannerUrl(withOpened);
@@ -218,6 +230,11 @@ exports.duplicate = async (req, res) => {
   });
 
   logger.info('Notification campaign duplicated', { sourceId: source._id, copyId: copy._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Created', module: 'Notifications', severity: 'Low',
+    target: { type: 'NotificationCampaign', id: copy._id, label: copy.title },
+    changes: { before: null, after: { title: copy.title, duplicatedFrom: source._id } },
+  });
 
   const withBanner = await attachBannerUrl({ ...copy.toObject(), opened: 0 });
   res.status(201).json({ status: 'success', data: { campaign: withBanner } });
@@ -235,6 +252,11 @@ exports.remove = async (req, res) => {
   }
 
   logger.info('Notification campaign deleted', { campaignId: campaign._id, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Deleted', module: 'Notifications', severity: 'Medium',
+    target: { type: 'NotificationCampaign', id: campaign._id, label: campaign.title },
+    changes: { before: { title: campaign.title, status: campaign.status }, after: null },
+  });
   res.status(200).json({ status: 'success', data: null });
 };
 

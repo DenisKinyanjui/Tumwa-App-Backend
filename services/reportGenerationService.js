@@ -16,6 +16,7 @@ const REPORT_TYPE_LABELS = {
   withdrawals: 'Withdrawals Report',
   disputes: 'Disputes Report',
   locations: 'Locations Report',
+  audit_logs: 'Audit Logs Report',
 };
 
 const MIME_TYPES = {

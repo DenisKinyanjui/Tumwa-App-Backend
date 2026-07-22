@@ -11,6 +11,7 @@ const {
 const { recalculateWorkingCapital } = require('../services/workingCapitalService');
 const notify = require('../services/notifyService');
 const logger = require('../utils/logger');
+const auditLogService = require('../services/auditLogService');
 
 // Lazy-load socket to avoid circular deps
 let _socket;
@@ -307,6 +308,14 @@ exports.resolveDispute = async (req, res) => {
 
   const populated = await populateDispute(Dispute.findById(dispute._id));
 
+  auditLogService.record({
+    req, action: actualRefund > 0 ? 'Refunded' : 'Updated', module: 'Disputes',
+    severity: actualRefund >= 5000 ? 'High' : 'Medium',
+    target: { type: 'Dispute', id: dispute._id, label: populated.errand?.title ?? null },
+    changes: { before: { status: 'pending' }, after: { status: 'resolved', outcome, refundAmount: actualRefund, penaltyAmount: outcome === 'partial' ? penaltyAmount : null } },
+    reason: notes || null,
+  });
+
   // ── Socket events ─────────────────────────────────────────────────────────
   getSocket().emitDisputeResolved(customer, runner, {
     disputeId: dispute._id,
@@ -405,6 +414,13 @@ exports.rejectDispute = async (req, res) => {
   }
 
   const populated = await populateDispute(Dispute.findById(dispute._id));
+
+  auditLogService.record({
+    req, action: 'Rejected', module: 'Disputes', severity: 'Medium',
+    target: { type: 'Dispute', id: dispute._id, label: populated.errand?.title ?? null },
+    changes: { before: { status: 'pending' }, after: { status: 'rejected' } },
+    reason: notes || null,
+  });
 
   getSocket().emitDisputeResolved(dispute.customer, dispute.runner, {
     disputeId: dispute._id,

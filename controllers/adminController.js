@@ -14,6 +14,7 @@ const { getDefaultLimit } = require('../services/workingCapitalService');
 const notify = require('../services/notifyService');
 const { presignVerification } = require('../utils/verificationPresign');
 const { attachProofPhotoUrl } = require('../utils/errandPresign');
+const auditLogService = require('../services/auditLogService');
 
 // ── Pagination helper ─────────────────────────────────────────────────────────
 const paginate = (query) => {
@@ -190,6 +191,13 @@ exports.approveVerification = async (req, res) => {
   });
 
   logger.info('Runner verification approved', { userId: req.params.userId, adminId: req.user._id });
+  const runnerName = (await User.findById(req.params.userId).select('name').lean())?.name ?? null;
+  auditLogService.record({
+    req, action: 'Approved', module: 'Verification', severity: 'Medium',
+    target: { type: 'User', id: req.params.userId, label: runnerName },
+    changes: { before: { status: existing?.status ?? 'pending' }, after: { status: 'approved' } },
+    reason: notes || null,
+  });
   res.status(200).json({ status: 'success', data: { verification } });
 };
 
@@ -232,6 +240,13 @@ exports.rejectVerification = async (req, res) => {
   });
 
   logger.info('Runner verification rejected', { userId: req.params.userId, adminId: req.user._id });
+  const runnerName = (await User.findById(req.params.userId).select('name').lean())?.name ?? null;
+  auditLogService.record({
+    req, action: 'Rejected', module: 'Verification', severity: 'Medium',
+    target: { type: 'User', id: req.params.userId, label: runnerName },
+    changes: { before: { status: 'pending' }, after: { status: 'rejected' } },
+    reason: notes.trim(),
+  });
   res.status(200).json({ status: 'success', data: { verification } });
 };
 
@@ -276,6 +291,13 @@ exports.requestResubmissionVerification = async (req, res) => {
   });
 
   logger.info('Runner verification resubmission requested', { userId: req.params.userId, adminId: req.user._id });
+  const runnerName = (await User.findById(req.params.userId).select('name').lean())?.name ?? null;
+  auditLogService.record({
+    req, action: 'Updated', module: 'Verification', severity: 'Low',
+    target: { type: 'User', id: req.params.userId, label: runnerName },
+    changes: { before: { status: 'pending' }, after: { status: 'resubmission_requested' } },
+    reason: reason.trim(),
+  });
   res.status(200).json({ status: 'success', data: { verification } });
 };
 
@@ -303,6 +325,13 @@ exports.reopenVerification = async (req, res) => {
   const verification = await presignVerification(verificationDoc);
 
   logger.info('Runner verification reopened', { userId: req.params.userId, adminId: req.user._id });
+  const runnerName = (await User.findById(req.params.userId).select('name').lean())?.name ?? null;
+  auditLogService.record({
+    req, action: 'Updated', module: 'Verification', severity: 'Low',
+    target: { type: 'User', id: req.params.userId, label: runnerName },
+    changes: { before: { status: existing.status }, after: { status: 'pending' } },
+    reason: req.body.reason || null,
+  });
   res.status(200).json({ status: 'success', data: { verification } });
 };
 
@@ -318,7 +347,7 @@ exports.updateUser = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'No valid fields to update' });
   }
 
-  const before = await User.findById(req.params.id).select('role workingCapital.limit');
+  const before = await User.findById(req.params.id).select(`${allowed.join(' ')} workingCapital.limit`);
   if (!before) return res.status(404).json({ status: 'fail', message: 'User not found' });
 
   // Promoting a customer to runner — seed a starting limit so they aren't
@@ -352,6 +381,24 @@ exports.updateUser = async (req, res) => {
     });
   }
 
+  const targetModule = ['admin', 'superadmin'].includes(before.role) ? 'Admin Users' : before.role === 'runner' ? 'Runners' : 'Users';
+  const beforeSnapshot = {};
+  const afterSnapshot = {};
+  allowed.forEach((field) => {
+    if (updates[field] === undefined) return;
+    beforeSnapshot[field] = before[field];
+    afterSnapshot[field] = user[field];
+  });
+
+  auditLogService.record({
+    req,
+    action: updates.isActive === false ? 'Suspended' : updates.isActive === true ? 'Activated' : 'Updated',
+    module: targetModule,
+    severity: updates.isActive !== undefined ? 'High' : 'Low',
+    target: { type: 'User', id: user._id, label: user.name },
+    changes: { before: beforeSnapshot, after: afterSnapshot },
+  });
+
   res.status(200).json({ status: 'success', data: { user } });
 };
 
@@ -373,8 +420,15 @@ exports.setWorkingCapitalLimit = async (req, res) => {
     return res.status(400).json({ status: 'fail', message: 'Working capital only applies to runners' });
   }
 
+  const previousLimit = user.workingCapital.limit;
   user.workingCapital.limit = numLimit;
   await user.save();
+
+  auditLogService.record({
+    req, action: 'Updated', module: 'Working Capital', severity: 'Medium',
+    target: { type: 'User', id: user._id, label: user.name },
+    changes: { before: { limit: previousLimit }, after: { limit: numLimit } },
+  });
 
   emitWalletUpdate(user._id, 'capacity_update');
 
@@ -421,6 +475,11 @@ exports.deleteUser = async (req, res) => {
     deletedUserName: user.name,
     adminId: req.user._id,
     ip: req.ip,
+  });
+  auditLogService.record({
+    req, action: 'Deleted', module: user.role === 'runner' ? 'Runners' : 'Users', severity: 'Critical',
+    target: { type: 'User', id: userId, label: user.name },
+    changes: { before: { name: user.name, phone: user.phone, role: user.role }, after: null },
   });
 
   res.status(200).json({ status: 'success', message: 'User and all associated data deleted permanently' });
@@ -540,6 +599,8 @@ exports.adjustWallet = async (req, res) => {
   const user = await User.findById(req.params.userId);
   if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
 
+  const previousBalance = user.wallet.earnings;
+
   if (operation === 'debit') {
     if (amount > user.wallet.earnings) {
       return res.status(400).json({
@@ -553,6 +614,13 @@ exports.adjustWallet = async (req, res) => {
   }
 
   await user.save();
+
+  auditLogService.record({
+    req, action: operation === 'credit' ? 'Refunded' : 'Updated', module: 'Withdrawals', severity: 'High',
+    target: { type: 'User', id: user._id, label: user.name },
+    changes: { before: { balance: previousBalance }, after: { balance: user.wallet.earnings, amount, operation } },
+    reason,
+  });
 
   // Notify the affected user
   notify.send({

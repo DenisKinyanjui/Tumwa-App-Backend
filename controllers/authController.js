@@ -9,6 +9,9 @@ const r2Service = require('../services/r2Service');
 const { getDefaultLimit } = require('../services/workingCapitalService');
 const { JWT, COOKIE, GOOGLE } = require('../config/security');
 const logger = require('../utils/logger');
+const auditLogService = require('../services/auditLogService');
+
+const ADMIN_ROLES = ['admin', 'superadmin'];
 
 const googleClient = new OAuth2Client();
 
@@ -143,6 +146,13 @@ exports.login = async (req, res) => {
   const user = await User.findOne(query).select('+password');
   if (!user || !(await user.comparePassword(password))) {
     logger.auth.warn('Failed login attempt', { identifier, ip: req.ip });
+    if (user && ADMIN_ROLES.includes(user.role)) {
+      auditLogService.record({
+        req, actor: user, action: 'Login', module: 'Admin Users', severity: 'Medium',
+        target: { type: 'User', id: user._id, label: user.name }, status: 'failed',
+        errorMessage: 'Incorrect password',
+      });
+    }
     return res.status(401).json({
       status: 'fail',
       message: isEmail ? 'Invalid email or password' : 'Invalid phone number or password',
@@ -162,6 +172,12 @@ exports.login = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('User logged in', { userId: user._id, role: user.role, ip: req.ip });
+  if (ADMIN_ROLES.includes(user.role)) {
+    auditLogService.record({
+      req, actor: user, action: 'Login', module: 'Admin Users', severity: 'Low',
+      target: { type: 'User', id: user._id, label: user.name }, status: 'success',
+    });
+  }
   await sendAuthResponse(res, 200, user, accessToken, isMobileClient(req) ? { refreshToken } : {});
 };
 
@@ -308,6 +324,12 @@ exports.logout = async (req, res) => {
       lastLogoutAt: new Date(),
     });
     logger.auth.info('User logged out', { userId, ip: req.ip });
+    if (ADMIN_ROLES.includes(req.user.role)) {
+      auditLogService.record({
+        req, action: 'Logout', module: 'Admin Users', severity: 'Low',
+        target: { type: 'User', id: userId, label: req.user.name },
+      });
+    }
   }
 
   clearRefreshCookie(res);
@@ -356,6 +378,12 @@ exports.changePassword = async (req, res) => {
   setRefreshCookie(res, refreshToken);
 
   logger.auth.info('Password changed', { userId: user._id, ip: req.ip });
+  if (ADMIN_ROLES.includes(user.role)) {
+    auditLogService.record({
+      req, action: 'Password Reset', module: 'Admin Users', severity: 'Medium',
+      target: { type: 'User', id: user._id, label: user.name }, reason: 'Self-service password change',
+    });
+  }
 
   res.status(200).json({
     status: 'success',
@@ -493,6 +521,12 @@ exports.resetPassword = async (req, res) => {
   await user.save();
 
   logger.auth.info('Password reset via email code', { userId: user._id, ip: req.ip });
+  if (ADMIN_ROLES.includes(user.role)) {
+    auditLogService.record({
+      req, actor: user, action: 'Password Reset', module: 'Admin Users', severity: 'High',
+      target: { type: 'User', id: user._id, label: user.name }, reason: 'Reset via emailed code',
+    });
+  }
 
   res.status(200).json({ status: 'success', message: 'Password reset successfully. Please log in.' });
 };

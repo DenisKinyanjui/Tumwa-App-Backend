@@ -16,6 +16,7 @@ const REPORT_TYPES = [
   'disputes',
   'locations',
   'promo_codes', // no backing data yet — generation rejects this type
+  'audit_logs',
 ];
 
 const reportSchema = new mongoose.Schema(

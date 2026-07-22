@@ -60,6 +60,8 @@ router.post('/broadcast', adminController.broadcast);
 // ── Legal content ─────────────────────────────────────────────────────────────
 router.get('/legal/terms', legalController.getTerms);
 router.put('/legal/terms', legalController.updateTerms);
+router.get('/legal/privacy', legalController.getPrivacyPolicy);
+router.put('/legal/privacy', legalController.updatePrivacyPolicy);
 
 // ── App settings ──────────────────────────────────────────────────────────────
 router.get('/settings', settingsController.getSettings);

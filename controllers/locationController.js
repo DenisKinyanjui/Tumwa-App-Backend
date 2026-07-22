@@ -3,6 +3,7 @@ const Errand = require('../models/Errand');
 const logger = require('../utils/logger');
 const { escapeRegex } = require('../utils/regex');
 const { buildRegionExpr } = require('../services/analyticsService');
+const auditLogService = require('../services/auditLogService');
 
 const VALID_STATUSES = ['active', 'inactive', 'retired'];
 
@@ -55,6 +56,11 @@ exports.adminCreate = async (req, res) => {
   const area = await ServiceArea.create({ name, region, sortOrder });
 
   logger.info('Service area created', { areaId: area._id, name, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Created', module: 'Locations', severity: 'Low',
+    target: { type: 'ServiceArea', id: area._id, label: area.name },
+    changes: { before: null, after: { name: area.name, region: area.region, sortOrder: area.sortOrder } },
+  });
   res.status(201).json({ status: 'success', data: { area } });
 };
 
@@ -89,6 +95,10 @@ exports.adminUpdate = async (req, res) => {
   // Any admin edit counts as the zone having been reviewed.
   patch.autoDetected = false;
 
+  const before = await ServiceArea.findById(req.params.id).select(`${Object.keys(patch).join(' ')} name`);
+  if (!before) return res.status(404).json({ status: 'fail', message: 'Area not found' });
+  const beforeSnapshot = Object.fromEntries(Object.keys(patch).map((field) => [field, before[field]]));
+
   const area = await ServiceArea.findByIdAndUpdate(req.params.id, patch, {
     new: true,
     runValidators: true,
@@ -96,6 +106,11 @@ exports.adminUpdate = async (req, res) => {
   if (!area) return res.status(404).json({ status: 'fail', message: 'Area not found' });
 
   logger.info('Service area updated', { areaId: area._id, patch, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Locations', severity: 'Low',
+    target: { type: 'ServiceArea', id: area._id, label: area.name },
+    changes: { before: beforeSnapshot, after: Object.fromEntries(Object.keys(patch).map((field) => [field, area[field]])) },
+  });
   res.status(200).json({ status: 'success', data: { area } });
 };
 
@@ -105,5 +120,10 @@ exports.adminDelete = async (req, res) => {
   if (!area) return res.status(404).json({ status: 'fail', message: 'Area not found' });
 
   logger.info('Service area deleted', { areaId: area._id, name: area.name, adminId: req.user._id });
+  auditLogService.record({
+    req, action: 'Deleted', module: 'Locations', severity: 'Medium',
+    target: { type: 'ServiceArea', id: area._id, label: area.name },
+    changes: { before: { name: area.name, region: area.region }, after: null },
+  });
   res.status(200).json({ status: 'success', data: null });
 };

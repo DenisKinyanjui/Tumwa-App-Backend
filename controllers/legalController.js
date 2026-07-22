@@ -1,5 +1,6 @@
 const LegalContent = require('../models/LegalContent');
 const logger = require('../utils/logger');
+const auditLogService = require('../services/auditLogService');
 
 // A document created before `type` existed is the original terms doc.
 const findByType = (type) =>
@@ -46,6 +47,7 @@ exports.updateTerms = async (req, res) => {
   }
 
   let terms = await findByType('terms');
+  const previousVersion = terms?.version ?? null;
 
   if (terms) {
     terms.content = content;
@@ -57,6 +59,11 @@ exports.updateTerms = async (req, res) => {
   }
 
   logger.info('Terms & conditions updated', { adminId: req.user._id, version: terms.version });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Settings', severity: 'Medium',
+    target: { type: 'Legal', id: null, label: 'Terms & Conditions' },
+    changes: { before: { version: previousVersion }, after: { version: terms.version } },
+  });
 
   res.status(200).json({
     status: 'success',
@@ -64,6 +71,43 @@ exports.updateTerms = async (req, res) => {
       content: terms.content,
       version: terms.version,
       updatedAt: terms.updatedAt,
+    },
+  });
+};
+
+// PUT /api/admin/legal/privacy — admin only
+exports.updatePrivacyPolicy = async (req, res) => {
+  const { content } = req.body;
+
+  if (typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ status: 'fail', message: 'Content is required.' });
+  }
+
+  let privacy = await findByType('privacy');
+  const previousVersion = privacy?.version ?? null;
+
+  if (privacy) {
+    privacy.content = content;
+    privacy.version += 1;
+    privacy.updatedBy = req.user._id;
+    await privacy.save();
+  } else {
+    privacy = await LegalContent.create({ type: 'privacy', content, updatedBy: req.user._id });
+  }
+
+  logger.info('Privacy policy updated', { adminId: req.user._id, version: privacy.version });
+  auditLogService.record({
+    req, action: 'Updated', module: 'Settings', severity: 'Medium',
+    target: { type: 'Legal', id: null, label: 'Privacy Policy' },
+    changes: { before: { version: previousVersion }, after: { version: privacy.version } },
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      content: privacy.content,
+      version: privacy.version,
+      updatedAt: privacy.updatedAt,
     },
   });
 };
