@@ -29,6 +29,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const reportGenerationRoutes = require('./routes/reportGenerationRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const verificationRoutes = require('./routes/verificationRoutes');
 const legalRoutes = require('./routes/legalRoutes');
@@ -123,6 +124,7 @@ app.use('/api/mobile/announcements', mobileAnnouncementRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/analytics', analyticsRoutes);
 app.use('/api/admin/reports', reportRoutes);
+app.use('/api/admin/reports/generated', reportGenerationRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {

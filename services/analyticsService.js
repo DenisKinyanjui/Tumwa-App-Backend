@@ -4,6 +4,7 @@ const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
 const Rating = require('../models/Rating');
 const ServiceArea = require('../models/ServiceArea');
+const RunnerVerification = require('../models/RunnerVerification');
 const { escapeRegex } = require('../utils/regex');
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ const parseDateRange = (query = {}) => {
 const getOverview = async (since, to) => {
   const dateFilter = { $gte: since, $lte: to };
 
-  const [userStats, errandStats, paymentStats, disputeStats, walletStats] =
+  const [userStats, errandStats, paymentStats, disputeStats, walletStats, escrowStats, workingCapitalStats] =
     await Promise.all([
       // User counts by role
       User.aggregate([
@@ -128,6 +129,10 @@ const getOverview = async (since, to) => {
                 },
               },
             ],
+            commission: [
+              { $match: { status: 'completed', completedAt: dateFilter } },
+              { $group: { _id: null, total: { $sum: '$platformEarns' } } },
+            ],
           },
         },
       ]),
@@ -158,6 +163,10 @@ const getOverview = async (since, to) => {
               },
               { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$amount' } } },
             ],
+            pendingWithdrawals: [
+              { $match: { type: 'withdrawal', status: 'pending' } },
+              { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$amount' } } },
+            ],
           },
         },
       ]),
@@ -177,14 +186,42 @@ const getOverview = async (since, to) => {
         },
       ]),
 
-      // Wallet totals across all runners
+      // Wallet totals — runner withdrawable earnings vs. customer reusable credit
       User.aggregate([
-        { $match: { role: 'runner' } },
+        {
+          $facet: {
+            runnerWallet: [
+              { $match: { role: 'runner' } },
+              { $group: { _id: null, total: { $sum: '$wallet.earnings' } } },
+            ],
+            customerWallet: [
+              { $match: { role: 'customer' } },
+              { $group: { _id: null, total: { $sum: '$customerWallet.balance' } } },
+            ],
+          },
+        },
+      ]),
+
+      // Escrow — errand funds already paid in but not yet released to the
+      // runner (not completed/confirmed) or refunded (not cancelled).
+      Errand.aggregate([
+        { $match: { isPaid: true, status: { $in: ['assigned', 'in_progress', 'completed'] } } },
+        { $group: { _id: null, total: { $sum: '$trustHeld' } } },
+      ]),
+
+      // Working capital utilization — how much of each runner's risk limit
+      // is currently tied up in active errands (not a cash balance, see
+      // workingCapital comment in models/User.js).
+      User.aggregate([
+        { $match: { role: 'runner', 'workingCapital.limit': { $gt: 0 } } },
         {
           $group: {
             _id: null,
-            totalWalletBalance: { $sum: '$trustWallet.total' },
-            totalLockedFunds: { $sum: '$trustWallet.locked' },
+            totalLimit: { $sum: '$workingCapital.limit' },
+            totalUsed: { $sum: '$workingCapital.used' },
+            avgUtilization: {
+              $avg: { $divide: ['$workingCapital.used', '$workingCapital.limit'] },
+            },
           },
         },
       ]),
@@ -211,6 +248,7 @@ const getOverview = async (since, to) => {
   const errandInPeriod = errandStats[0].inPeriod[0] ?? {
     count: 0, totalValue: 0, completedCount: 0,
   };
+  const commissionTotal = errandStats[0].commission[0]?.total ?? 0;
   const completionRate =
     errandOverall.total > 0
       ? parseFloat(
@@ -223,6 +261,7 @@ const getOverview = async (since, to) => {
   const withdrawals = paymentStats[0].withdrawals[0] ?? { count: 0, total: 0 };
   const failedCount = paymentStats[0].failed[0]?.count ?? 0;
   const inPeriodRevenue = paymentStats[0].inPeriodRevenue[0] ?? { count: 0, total: 0 };
+  const pendingWithdrawals = paymentStats[0].pendingWithdrawals[0] ?? { count: 0, total: 0 };
   const totalPaymentAttempts = revenue.count + failedCount;
   const paymentSuccessRate =
     totalPaymentAttempts > 0
@@ -235,8 +274,13 @@ const getOverview = async (since, to) => {
   );
   const totalDisputes = Object.values(disputeByStatus).reduce((a, b) => a + b, 0);
 
-  // ── Wallet data ────────────────────────────────────────────────────────────
-  const wallet = walletStats[0] ?? { totalWalletBalance: 0, totalLockedFunds: 0 };
+  // ── Wallet / escrow data ───────────────────────────────────────────────────
+  const runnerWalletTotal = walletStats[0]?.runnerWallet[0]?.total ?? 0;
+  const customerWalletTotal = walletStats[0]?.customerWallet[0]?.total ?? 0;
+  const escrowTotal = escrowStats[0]?.total ?? 0;
+
+  // ── Working capital data ───────────────────────────────────────────────────
+  const wc = workingCapitalStats[0] ?? { totalLimit: 0, totalUsed: 0, avgUtilization: 0 };
 
   return {
     period: { since, to },
@@ -268,17 +312,28 @@ const getOverview = async (since, to) => {
     payments: {
       revenue,
       withdrawals,
+      pendingWithdrawals,
       failedCount,
       inPeriodRevenue,
       paymentSuccessRate,
       netBalance: revenue.total - withdrawals.total,
+      commission: parseFloat(commissionTotal.toFixed(2)),
     },
     disputes: {
       total: totalDisputes,
       byStatus: disputeByStatus,
       inPeriod: disputeStats[0].inPeriod[0]?.count ?? 0,
     },
-    trustWallet: wallet,
+    wallets: {
+      runnerWalletTotal: parseFloat(runnerWalletTotal.toFixed(2)),
+      customerWalletTotal: parseFloat(customerWalletTotal.toFixed(2)),
+      escrowTotal: parseFloat(escrowTotal.toFixed(2)),
+    },
+    workingCapital: {
+      totalLimit: parseFloat((wc.totalLimit ?? 0).toFixed(2)),
+      totalUsed: parseFloat((wc.totalUsed ?? 0).toFixed(2)),
+      avgUtilization: parseFloat((((wc.avgUtilization ?? 0)) * 100).toFixed(1)),
+    },
   };
 };
 
@@ -666,7 +721,7 @@ const getRunnerAnalytics = async (since, to, filters = {}) => {
 
     // Table — top 20 runners
     User.find({ role: 'runner', isActive: true })
-      .select('name phone level rating completedErrands disputesAgainst trustWallet createdAt')
+      .select('name phone level rating completedErrands disputesAgainst wallet createdAt')
       .sort({ completedErrands: -1, rating: -1 })
       .limit(20)
       .lean(),
@@ -732,8 +787,7 @@ const getRunnerAnalytics = async (since, to, filters = {}) => {
         avgRating: { $avg: '$rating' },
         avgCompletedErrands: { $avg: '$completedErrands' },
         totalCompletedErrands: { $sum: '$completedErrands' },
-        totalWalletBalance: { $sum: '$trustWallet.total' },
-        totalLockedFunds: { $sum: '$trustWallet.locked' },
+        totalWalletBalance: { $sum: '$wallet.earnings' },
         runnersWithDisputes: {
           $sum: { $cond: [{ $gt: ['$disputesAgainst', 0] }, 1, 0] },
         },
@@ -744,7 +798,7 @@ const getRunnerAnalytics = async (since, to, filters = {}) => {
   const metrics = runnerMetrics ?? {
     totalRunners: 0, activeRunners: 0, avgRating: 0,
     avgCompletedErrands: 0, totalCompletedErrands: 0,
-    totalWalletBalance: 0, totalLockedFunds: 0, runnersWithDisputes: 0,
+    totalWalletBalance: 0, runnersWithDisputes: 0,
   };
 
   // Shape topRunners for table output
@@ -760,9 +814,10 @@ const getRunnerAnalytics = async (since, to, filters = {}) => {
       r.completedErrands > 0
         ? parseFloat((r.disputesAgainst / r.completedErrands).toFixed(3))
         : 0,
-    walletBalance: r.trustWallet?.total ?? 0,
-    lockedFunds: r.trustWallet?.locked ?? 0,
-    availableBalance: (r.trustWallet?.total ?? 0) - (r.trustWallet?.locked ?? 0),
+    // Runner earnings have no separate "locked" concept — see wallet.earnings
+    // comment in models/User.js.
+    walletBalance: r.wallet?.earnings ?? 0,
+    availableBalance: r.wallet?.earnings ?? 0,
     memberSince: r.createdAt,
   }));
 
@@ -774,7 +829,6 @@ const getRunnerAnalytics = async (since, to, filters = {}) => {
       avgCompletedErrands: parseFloat((metrics.avgCompletedErrands ?? 0).toFixed(1)),
       totalCompletedErrands: metrics.totalCompletedErrands,
       totalWalletBalance: parseFloat((metrics.totalWalletBalance ?? 0).toFixed(2)),
-      totalLockedFunds: parseFloat((metrics.totalLockedFunds ?? 0).toFixed(2)),
       runnersWithDisputes: metrics.runnersWithDisputes,
     },
     charts: {
@@ -1034,6 +1088,148 @@ const getDisputeAnalytics = async (since, to, bucketFormat) => {
   };
 };
 
+// ── Location analytics ────────────────────────────────────────────────────────
+
+const getLocationAnalytics = async (since, to, bucketFormat) => {
+  const dateFilter = { createdAt: { $gte: since, $lte: to } };
+  const areaNames = (await ServiceArea.find().select('name').lean()).map((a) => a.name);
+  const regionExpr = buildRegionExpr(areaNames, 'pickup');
+
+  const [topRegions, revenueByRegion, growthTrend, summary] = await Promise.all([
+    // Bar chart — top 10 regions by errand count
+    Errand.aggregate([
+      { $match: dateFilter },
+      { $group: { _id: regionExpr, count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+      { $project: { label: '$_id', count: 1, _id: 0 } },
+    ]),
+
+    // Bar chart — revenue by region (completed errands only)
+    Errand.aggregate([
+      { $match: { ...dateFilter, status: 'completed' } },
+      { $group: { _id: regionExpr, total: { $sum: '$amount' } } },
+      { $sort: { total: -1 } },
+      { $limit: 10 },
+      { $project: { label: '$_id', total: { $round: ['$total', 2] }, _id: 0 } },
+    ]),
+
+    // Line chart — errand volume over time for the top region bucket
+    Errand.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: { $dateToString: { format: bucketFormat, date: '$createdAt' } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { label: '$_id', count: 1, _id: 0 } },
+    ]),
+
+    // Summary
+    Errand.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          totalValue: { $sum: '$amount' },
+          regions: { $addToSet: regionExpr },
+        },
+      },
+    ]),
+  ]);
+
+  const s = summary[0] ?? { total: 0, totalValue: 0, regions: [] };
+
+  return {
+    summary: {
+      totalErrands: s.total,
+      totalValue: parseFloat((s.totalValue ?? 0).toFixed(2)),
+      activeRegions: (s.regions ?? []).filter((r) => r !== 'Other').length,
+    },
+    charts: {
+      topRegions: {
+        type: 'bar',
+        title: 'Top Regions by Errands',
+        data: topRegions,
+      },
+      revenueByRegion: {
+        type: 'bar',
+        title: 'Revenue by Region',
+        data: revenueByRegion,
+      },
+      growthTrend: {
+        type: 'line',
+        title: 'Errand Volume Over Time',
+        data: growthTrend,
+      },
+    },
+  };
+};
+
+// ── Verification analytics ────────────────────────────────────────────────────
+
+const getVerificationAnalytics = async (since, to) => {
+  const dateFilter = { createdAt: { $gte: since, $lte: to } };
+
+  const [byStatus, timeSeries, avgReview] = await Promise.all([
+    // Pie chart — verification status breakdown
+    RunnerVerification.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+      { $project: { label: '$_id', count: 1, _id: 0 } },
+    ]),
+
+    // Line chart — submissions over time
+    RunnerVerification.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { label: '$_id', count: 1, _id: 0 } },
+    ]),
+
+    // Avg review time for decided verifications
+    RunnerVerification.aggregate([
+      { $match: { reviewedAt: { $ne: null } } },
+      { $project: { reviewMs: { $subtract: ['$reviewedAt', '$submittedAt'] } } },
+      { $group: { _id: null, avgMs: { $avg: '$reviewMs' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const statusMap = Object.fromEntries(byStatus.map((s) => [s.label, s.count]));
+  const total = Object.values(statusMap).reduce((a, b) => a + b, 0);
+  const avgMs = avgReview[0]?.avgMs ?? 0;
+
+  return {
+    summary: {
+      total,
+      pending: statusMap.pending ?? 0,
+      approved: statusMap.approved ?? 0,
+      rejected: statusMap.rejected ?? 0,
+      resubmissionRequested: statusMap.resubmission_requested ?? 0,
+      avgReviewHours: parseFloat((avgMs / 3_600_000).toFixed(1)),
+    },
+    charts: {
+      byStatus: {
+        type: 'pie',
+        title: 'Verification Status Breakdown',
+        data: byStatus,
+      },
+      timeSeries: {
+        type: 'line',
+        title: 'Verification Submissions Over Time',
+        data: timeSeries,
+      },
+    },
+  };
+};
+
 module.exports = {
   parseDateRange,
   getOverview,
@@ -1042,5 +1238,7 @@ module.exports = {
   getRunnerAnalytics,
   getCustomerAnalytics,
   getDisputeAnalytics,
+  getLocationAnalytics,
+  getVerificationAnalytics,
   buildRegionExpr,
 };

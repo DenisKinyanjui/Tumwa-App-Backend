@@ -181,10 +181,9 @@ const getUserStats = async (since) => {
           {
             $group: {
               _id: null,
-              totalWalletBalance: { $sum: '$trustWallet.total' },
-              totalLockedFunds: { $sum: '$trustWallet.locked' },
-              avgWalletBalance: { $avg: '$trustWallet.total' },
-              runnersWithFunds: { $sum: { $cond: [{ $gt: ['$trustWallet.total', 0] }, 1, 0] } },
+              totalWalletBalance: { $sum: '$wallet.earnings' },
+              avgWalletBalance: { $avg: '$wallet.earnings' },
+              runnersWithFunds: { $sum: { $cond: [{ $gt: ['$wallet.earnings', 0] }, 1, 0] } },
             },
           },
         ],
@@ -200,7 +199,6 @@ const getUserStats = async (since) => {
     byRole: result.byRole,
     walletSummary: result.walletSummary[0] ?? {
       totalWalletBalance: 0,
-      totalLockedFunds: 0,
       avgWalletBalance: 0,
       runnersWithFunds: 0,
     },
@@ -243,7 +241,7 @@ const getVolumeTimeSeries = async (since, period) => {
 // ── Top runners ───────────────────────────────────────────────────────────────
 const getTopRunners = async (limit = 10) => {
   return User.find({ role: 'runner', isActive: true })
-    .select('name phone rating completedErrands level trustWallet disputesAgainst')
+    .select('name phone rating completedErrands level wallet disputesAgainst')
     .sort({ completedErrands: -1, rating: -1 })
     .limit(limit)
     .lean();

@@ -6,6 +6,8 @@ const {
   getRunnerAnalytics,
   getCustomerAnalytics,
   getDisputeAnalytics,
+  getLocationAnalytics,
+  getVerificationAnalytics,
 } = require('../services/analyticsService');
 
 const VALID_PERIODS = ['day', 'week', 'month', 'quarter', 'year'];
@@ -131,5 +133,29 @@ exports.disputes = async (req, res) => {
 
   const { since, to, bucketFormat } = parseDateRange(req.query);
   const data = await getDisputeAnalytics(since, to, bucketFormat);
+  res.status(200).json({ status: 'success', data });
+};
+
+// ── GET /api/admin/analytics/locations ───────────────────────────────────────
+// Returns geographic analytics — top regions, revenue by region.
+// Query: period | dateFrom + dateTo
+exports.locations = async (req, res) => {
+  const periodErr = validatePeriod(req.query.period);
+  if (periodErr) return res.status(400).json({ status: 'fail', message: periodErr });
+
+  const { since, to, bucketFormat } = parseDateRange(req.query);
+  const data = await getLocationAnalytics(since, to, bucketFormat);
+  res.status(200).json({ status: 'success', data });
+};
+
+// ── GET /api/admin/analytics/verifications ───────────────────────────────────
+// Returns identity verification analytics.
+// Query: period | dateFrom + dateTo
+exports.verifications = async (req, res) => {
+  const periodErr = validatePeriod(req.query.period);
+  if (periodErr) return res.status(400).json({ status: 'fail', message: periodErr });
+
+  const { since, to } = parseDateRange(req.query);
+  const data = await getVerificationAnalytics(since, to);
   res.status(200).json({ status: 'success', data });
 };

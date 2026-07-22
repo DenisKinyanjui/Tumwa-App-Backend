@@ -232,7 +232,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ role: 1, isActive: 1 });           // getUsers filter
 userSchema.index({ role: 1, createdAt: -1 });          // analytics / reports
 userSchema.index({ role: 1, completedErrands: -1, rating: -1 }); // top runners
-userSchema.index({ role: 1, 'trustWallet.total': -1 }); // wallet queries
+userSchema.index({ role: 1, 'wallet.earnings': -1 }); // wallet queries
 // Matching eligibility — role + availability status + working capital limit
 userSchema.index({ role: 1, 'availability.status': 1, 'workingCapital.limit': -1 });
 // Cooldown expiry queries

@@ -131,7 +131,7 @@ exports.sendMessage = async (req, res) => {
     type: 'support',
     relatedId: conversation._id,
     relatedModel: 'SupportConversation',
-    eventName: 'support:new-message',
+    eventName: 'support:message-alert',
     eventData: { conversationId: conversation._id, messageId: message._id },
   });
 
@@ -163,7 +163,7 @@ exports.sendAttachment = async (req, res) => {
     type: 'support',
     relatedId: conversation._id,
     relatedModel: 'SupportConversation',
-    eventName: 'support:new-message',
+    eventName: 'support:message-alert',
     eventData: { conversationId: conversation._id, messageId: message._id },
   });
 

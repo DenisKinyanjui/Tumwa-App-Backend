@@ -3,7 +3,9 @@ const User = require('../models/User');
 const Payment = require('../models/Payment');
 const Dispute = require('../models/Dispute');
 const Rating = require('../models/Rating');
-const { parseDateRange } = require('../services/analyticsService');
+const ServiceArea = require('../models/ServiceArea');
+const RunnerVerification = require('../models/RunnerVerification');
+const { parseDateRange, buildRegionExpr } = require('../services/analyticsService');
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -241,12 +243,12 @@ exports.runnersReport = async (req, res) => {
   if (minRating) filter.rating = { $gte: parseFloat(minRating) };
   if (minErrands) filter.completedErrands = { $gte: parseInt(minErrands) };
 
-  const ALLOWED_SORTS = ['completedErrands', 'rating', 'createdAt', 'level', 'trustWallet.total'];
+  const ALLOWED_SORTS = ['completedErrands', 'rating', 'createdAt', 'level', 'wallet.earnings'];
   const sortField = ALLOWED_SORTS.includes(sortBy) ? sortBy : 'completedErrands';
 
   const [runners, total, aggregateStats] = await Promise.all([
     User.find(filter)
-      .select('name phone level rating completedErrands ratingCount disputesAgainst trustWallet isActive createdAt')
+      .select('name phone level rating completedErrands ratingCount disputesAgainst wallet isActive createdAt')
       .sort({ [sortField]: order === 'asc' ? 1 : -1 })
       .skip(skip)
       .limit(limit)
@@ -265,8 +267,7 @@ exports.runnersReport = async (req, res) => {
           avgRating: { $avg: '$rating' },
           avgCompletedErrands: { $avg: '$completedErrands' },
           totalCompletedErrands: { $sum: '$completedErrands' },
-          totalWalletBalance: { $sum: '$trustWallet.total' },
-          totalLockedFunds: { $sum: '$trustWallet.locked' },
+          totalWalletBalance: { $sum: '$wallet.earnings' },
         },
       },
     ]),
@@ -298,7 +299,7 @@ exports.runnersReport = async (req, res) => {
     };
     return {
       ...r,
-      availableBalance: (r.trustWallet?.total ?? 0) - (r.trustWallet?.locked ?? 0),
+      availableBalance: r.wallet?.earnings ?? 0,
       disputeRate:
         r.completedErrands > 0
           ? parseFloat((r.disputesAgainst / r.completedErrands).toFixed(3))
@@ -314,7 +315,7 @@ exports.runnersReport = async (req, res) => {
   const agg = aggregateStats[0] ?? {
     totalRunners: 0, activeRunners: 0, avgRating: 0,
     avgCompletedErrands: 0, totalCompletedErrands: 0,
-    totalWalletBalance: 0, totalLockedFunds: 0,
+    totalWalletBalance: 0,
   };
 
   paginatedResponse(
@@ -327,10 +328,6 @@ exports.runnersReport = async (req, res) => {
         avgCompletedErrands: parseFloat((agg.avgCompletedErrands ?? 0).toFixed(1)),
         totalCompletedErrands: agg.totalCompletedErrands,
         totalWalletBalance: parseFloat((agg.totalWalletBalance ?? 0).toFixed(2)),
-        totalLockedFunds: parseFloat((agg.totalLockedFunds ?? 0).toFixed(2)),
-        availableBalance: parseFloat(
-          ((agg.totalWalletBalance ?? 0) - (agg.totalLockedFunds ?? 0)).toFixed(2)
-        ),
       },
       rows,
     },
@@ -546,6 +543,147 @@ exports.customersReport = async (req, res) => {
         inactiveCustomers: agg.total - agg.active,
       },
       rows,
+    },
+    total,
+    page,
+    limit
+  );
+};
+
+// ── GET /api/admin/reports/locations ──────────────────────────────────────────
+// Filters: period | dateFrom | dateTo | status (ServiceArea status)
+// One row per ServiceArea, enriched with errand count/revenue in the period.
+exports.locationsReport = async (req, res) => {
+  const { page, limit, skip } = paginate(req.query);
+  const { status, sortBy = 'name', order = 'asc' } = req.query;
+
+  const { since, to } = parseDateRange(req.query);
+  const dateFilter = { createdAt: { $gte: since, $lte: to } };
+
+  const filter = {};
+  if (status) filter.status = status;
+
+  const ALLOWED_SORTS = ['name', 'region', 'sortOrder', 'createdAt'];
+  const sortField = ALLOWED_SORTS.includes(sortBy) ? sortBy : 'name';
+
+  const [areas, total] = await Promise.all([
+    ServiceArea.find(filter)
+      .sort({ [sortField]: order === 'asc' ? 1 : -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    ServiceArea.countDocuments(filter),
+  ]);
+
+  const allAreaNames = (await ServiceArea.find().select('name').lean()).map((a) => a.name);
+  const regionExpr = buildRegionExpr(allAreaNames, 'pickup');
+
+  const [regionStats, growth] = await Promise.all([
+    Errand.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: regionExpr,
+          errandCount: { $sum: 1 },
+          revenue: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, '$amount', 0] } },
+        },
+      },
+    ]),
+    Errand.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: { region: regionExpr, month: { $dateToString: { format: '%Y-%m', date: '$createdAt' } } },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  const statsMap = Object.fromEntries(regionStats.map((r) => [r._id, r]));
+  const growthByRegion = {};
+  growth.forEach((g) => {
+    const region = g._id.region;
+    if (!growthByRegion[region]) growthByRegion[region] = [];
+    growthByRegion[region].push({ label: g._id.month, count: g.count });
+  });
+
+  const rows = areas.map((a) => {
+    const stats = statsMap[a.name] ?? { errandCount: 0, revenue: 0 };
+    return {
+      ...a,
+      errandCount: stats.errandCount,
+      revenue: parseFloat((stats.revenue ?? 0).toFixed(2)),
+      growthTrend: (growthByRegion[a.name] ?? []).sort((x, y) => x.label.localeCompare(y.label)),
+    };
+  });
+
+  const summary = {
+    totalRegions: total,
+    activeRegions: await ServiceArea.countDocuments({ ...filter, status: 'active' }),
+    totalErrands: regionStats.reduce((sum, r) => sum + r.errandCount, 0),
+    totalRevenue: parseFloat(regionStats.reduce((sum, r) => sum + (r.revenue ?? 0), 0).toFixed(2)),
+  };
+
+  paginatedResponse(res, { summary, rows }, total, page, limit);
+};
+
+// ── GET /api/admin/reports/verifications ──────────────────────────────────────
+// Filters: period | dateFrom | dateTo | status
+exports.verificationsReport = async (req, res) => {
+  const { page, limit, skip } = paginate(req.query);
+  const { status, sortBy = 'submittedAt', order = 'desc' } = req.query;
+
+  const { since, to } = parseDateRange(req.query);
+  const dateFilter = { createdAt: { $gte: since, $lte: to } };
+
+  const filter = { ...dateFilter };
+  if (status) filter.status = status;
+
+  const ALLOWED_SORTS = ['submittedAt', 'reviewedAt', 'createdAt', 'status'];
+  const sortField = ALLOWED_SORTS.includes(sortBy) ? sortBy : 'submittedAt';
+
+  const [verifications, total, summary] = await Promise.all([
+    RunnerVerification.find(filter)
+      .populate('user', 'name phone level rating')
+      .sort({ [sortField]: order === 'asc' ? 1 : -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+
+    RunnerVerification.countDocuments(filter),
+
+    RunnerVerification.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          byStatus: [{ $group: { _id: '$status', count: { $sum: 1 } } }],
+          avgReviewTime: [
+            { $match: { reviewedAt: { $ne: null } } },
+            { $project: { reviewMs: { $subtract: ['$reviewedAt', '$submittedAt'] } } },
+            { $group: { _id: null, avgMs: { $avg: '$reviewMs' } } },
+          ],
+        },
+      },
+    ]),
+  ]);
+
+  const agg = summary[0] ?? {};
+  const byStatus = Object.fromEntries((agg.byStatus ?? []).map((s) => [s._id, s.count]));
+  const avgMs = agg.avgReviewTime?.[0]?.avgMs ?? 0;
+
+  paginatedResponse(
+    res,
+    {
+      summary: {
+        total,
+        pending: byStatus.pending ?? 0,
+        approved: byStatus.approved ?? 0,
+        rejected: byStatus.rejected ?? 0,
+        resubmissionRequested: byStatus.resubmission_requested ?? 0,
+        avgReviewHours: parseFloat((avgMs / 3_600_000).toFixed(1)),
+      },
+      rows: verifications,
     },
     total,
     page,

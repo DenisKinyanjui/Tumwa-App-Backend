@@ -30,6 +30,13 @@ let io;
  *
  *   support:{conversationId} — room for a support conversation, joined via support:join.
  *   support:new-message         → support:{id} room + user:{requesterId} + user:{assignedAdmin}
+ *                                  payload: {conversationId, message} (full message doc)
+ *   support:message-alert       → notifyService's badge/notification event for the same
+ *                                  message (admins room if unassigned, else assignedAdmin /
+ *                                  requester). Deliberately a DIFFERENT event name from
+ *                                  support:new-message — its payload is {conversationId,
+ *                                  messageId, notificationId}, no `message` object, so a
+ *                                  listener built for one must never be reused for the other.
  *   support:conversation-updated→ admins room + user:{requesterId}
  *   support:new-conversation    → admins room
  *   support:user-typing/-stop-typing → support:{id} room (broadcast, ephemeral)

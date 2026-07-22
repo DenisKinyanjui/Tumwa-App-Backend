@@ -21,8 +21,16 @@ const s3 = new S3Client({
  * @param {string} mimeType - e.g. 'image/jpeg'
  * @returns {Promise<string>} the R2 object key
  */
+const EXTENSION_BY_MIME = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'application/pdf': 'pdf',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'text/csv': 'csv',
+};
+
 exports.uploadFile = async (buffer, folder, label, mimeType) => {
-  const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+  const ext = EXTENSION_BY_MIME[mimeType] ?? 'jpg';
   const key = `${folder}/${label}-${Date.now()}.${ext}`;
 
   await s3.send(new PutObjectCommand({

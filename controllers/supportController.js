@@ -178,6 +178,13 @@ exports.markRead = async (req, res) => {
 
 // Shared by sendMessage/sendAttachment: notify the assigned admin, or all
 // admins if the conversation hasn't been claimed yet.
+//
+// eventName is deliberately NOT 'support:new-message' — that event already
+// carries the full message object via emitSupportMessage (socketManager.js),
+// and notifyService's socket emit uses a different payload shape
+// ({conversationId, messageId, notificationId}, no `message` key). Reusing
+// the same event name would deliver two differently-shaped payloads under
+// one listener and crash whichever client code assumes `message` exists.
 async function notifyAdmins(conversation, sender, message) {
   const base = {
     title: sender.name,
@@ -185,7 +192,7 @@ async function notifyAdmins(conversation, sender, message) {
     type: 'support',
     relatedId: conversation._id,
     relatedModel: 'SupportConversation',
-    eventName: 'support:new-message',
+    eventName: 'support:message-alert',
     eventData: { conversationId: conversation._id, messageId: message._id },
   };
 

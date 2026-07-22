@@ -51,7 +51,7 @@ exports.getUsers = async (req, res) => {
     ];
   }
 
-  const allowedSorts = ['createdAt', 'rating', 'completedErrands', 'name', 'trustWallet.total', 'workingCapital.limit'];
+  const allowedSorts = ['createdAt', 'rating', 'completedErrands', 'name', 'wallet.earnings', 'workingCapital.limit'];
   const sortField = allowedSorts.includes(sortBy) ? sortBy : 'createdAt';
   const sortDir = order === 'asc' ? 1 : -1;
 
@@ -465,7 +465,7 @@ exports.getErrands = async (req, res) => {
 exports.getErrand = async (req, res) => {
   const errandDoc = await Errand.findById(req.params.id)
     .populate('customer', 'name phone')
-    .populate('runner', 'name phone rating level trustWallet');
+    .populate('runner', 'name phone rating level wallet');
 
   if (!errandDoc) return res.status(404).json({ status: 'fail', message: 'Errand not found' });
 
@@ -486,11 +486,10 @@ exports.getErrand = async (req, res) => {
 // GET /api/admin/wallets
 exports.getWallets = async (req, res) => {
   const { page, limit, skip } = paginate(req.query);
-  const { minBalance, hasLocked, search } = req.query;
+  const { minBalance, search } = req.query;
 
   const filter = { role: 'runner' };
-  if (minBalance) filter['trustWallet.total'] = { $gte: parseFloat(minBalance) };
-  if (hasLocked === 'true') filter['trustWallet.locked'] = { $gt: 0 };
+  if (minBalance) filter['wallet.earnings'] = { $gte: parseFloat(minBalance) };
   if (search) {
     filter.$or = [
       { name: { $regex: search, $options: 'i' } },
@@ -500,24 +499,25 @@ exports.getWallets = async (req, res) => {
 
   const [runners, total] = await Promise.all([
     User.find(filter)
-      .select('name phone level rating completedErrands trustWallet isActive')
-      .sort({ 'trustWallet.total': -1 })
+      .select('name phone level rating completedErrands wallet isActive')
+      .sort({ 'wallet.earnings': -1 })
       .skip(skip)
       .limit(limit),
     User.countDocuments(filter),
   ]);
 
-  // Compute availableBalance for each
+  // Runner earnings have no separate "locked" concept — the full balance is
+  // available for withdrawal (see wallet.earnings comment in models/User.js).
   const data = runners.map((r) => ({
     ...r.toObject(),
-    availableBalance: r.trustWallet.total - r.trustWallet.locked,
+    availableBalance: r.wallet.earnings,
   }));
 
   paginatedResponse(res, { wallets: data }, total, page, limit);
 };
 
 // PATCH /api/admin/wallets/:userId
-// Manually adjust a user's trust wallet balance.
+// Manually adjust a runner's withdrawable earnings balance.
 exports.adjustWallet = async (req, res) => {
   const { operation, amount, reason } = req.body;
 
@@ -541,16 +541,15 @@ exports.adjustWallet = async (req, res) => {
   if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
 
   if (operation === 'debit') {
-    const available = user.trustWallet.total - user.trustWallet.locked;
-    if (amount > available) {
+    if (amount > user.wallet.earnings) {
       return res.status(400).json({
         status: 'fail',
-        message: `Cannot debit ${amount}. Available (unlocked) balance is ${available}.`,
+        message: `Cannot debit ${amount}. Available balance is ${user.wallet.earnings}.`,
       });
     }
-    user.trustWallet.total -= amount;
+    user.wallet.earnings -= amount;
   } else {
-    user.trustWallet.total += amount;
+    user.wallet.earnings += amount;
   }
 
   await user.save();
@@ -558,8 +557,8 @@ exports.adjustWallet = async (req, res) => {
   // Notify the affected user
   notify.send({
     userId: user._id,
-    title: 'Trust Wallet Adjusted',
-    message: `An admin ${operation}ed KES ${amount} ${operation === 'credit' ? 'to' : 'from'} your trust wallet. Reason: ${reason}.`,
+    title: 'Wallet Adjusted',
+    message: `An admin ${operation}ed KES ${amount} ${operation === 'credit' ? 'to' : 'from'} your wallet. Reason: ${reason}.`,
     type: 'admin',
     relatedId: user._id,
     relatedModel: 'User',
@@ -568,8 +567,7 @@ exports.adjustWallet = async (req, res) => {
       operation,
       amount,
       reason,
-      newTotal: user.trustWallet.total,
-      newAvailable: user.trustWallet.total - user.trustWallet.locked,
+      newBalance: user.wallet.earnings,
     },
   });
 
@@ -579,8 +577,8 @@ exports.adjustWallet = async (req, res) => {
     data: {
       userId: user._id,
       name: user.name,
-      trustWallet: user.trustWallet,
-      availableBalance: user.trustWallet.total - user.trustWallet.locked,
+      wallet: user.wallet,
+      availableBalance: user.wallet.earnings,
     },
   });
 };

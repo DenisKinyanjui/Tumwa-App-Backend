@@ -10,16 +10,20 @@ router.use(protect);
 router.use(restrictTo('admin', 'superadmin'));
 router.use(adminLimiter);
 
-// GET /api/admin/reports/errands    — paginated errand list + summary
-// GET /api/admin/reports/payments   — paginated payment list + summary
-// GET /api/admin/reports/runners    — paginated runner performance table + summary
-// GET /api/admin/reports/disputes   — paginated dispute list + summary
-// GET /api/admin/reports/customers  — paginated customer activity list + summary
+// GET /api/admin/reports/errands        — paginated errand list + summary
+// GET /api/admin/reports/payments       — paginated payment list + summary
+// GET /api/admin/reports/runners        — paginated runner performance table + summary
+// GET /api/admin/reports/disputes       — paginated dispute list + summary
+// GET /api/admin/reports/customers      — paginated customer activity list + summary
+// GET /api/admin/reports/locations      — per-region errand/revenue table + summary
+// GET /api/admin/reports/verifications  — paginated verification queue history + summary
 
 router.get('/errands', reportController.errandsReport);
 router.get('/payments', reportController.paymentsReport);
 router.get('/runners', reportController.runnersReport);
 router.get('/disputes', reportController.disputesReport);
 router.get('/customers', reportController.customersReport);
+router.get('/locations', reportController.locationsReport);
+router.get('/verifications', reportController.verificationsReport);
 
 module.exports = router;
