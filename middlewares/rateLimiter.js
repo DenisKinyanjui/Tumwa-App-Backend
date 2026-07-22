@@ -99,8 +99,15 @@ const paymentLimiter = createLimiter(
   (req) => (req.user ? `payment_${req.user._id}` : req.ip)
 );
 
-// ── Admin routes limiter ──────────────────────────────────────────────────────
-const adminLimiter = createLimiter(RATE_LIMITS.ADMIN);
+// ── Admin routes limiter — keyed by authenticated admin's user ID ────────────
+// Must be mounted AFTER `protect` in each router so req.user is populated;
+// otherwise every request falls back to req.ip and admins sharing an office
+// network/IP would drain each other's budget. Falls back to IP only for the
+// (should-be-impossible) case of reaching this without an authenticated user.
+const adminLimiter = createLimiter(
+  RATE_LIMITS.ADMIN,
+  (req) => (req.user ? `admin_${req.user._id}` : req.ip)
+);
 
 module.exports = {
   authLimiter,

@@ -245,6 +245,23 @@ const registerDeviceToken = Joi.object({
   fcmToken: Joi.string().required(),
 });
 
+// ── Notification campaign schemas (admin) ─────────────────────────────────────
+
+const notificationCampaignPayload = Joi.object({
+  title: Joi.string().trim().min(1).max(100).required(),
+  message: Joi.string().trim().min(1).max(500).required(),
+  bannerImageKey: Joi.string().trim().max(500).allow(null, '').optional(),
+  audience: Joi.string().valid('all', 'customers', 'runners', 'specific').required(),
+  specificUserIds: Joi.array().items(fields.objectId).when('audience', {
+    is: 'specific',
+    then: Joi.array().min(1).required().messages({ 'array.min': 'Select at least one user for a specific audience' }),
+    otherwise: Joi.array().max(0).optional(),
+  }),
+  type: Joi.string().valid('system', 'promotion', 'announcement', 'reminder').required(),
+  action: Joi.string().valid('draft', 'publish').required(),
+  scheduledAt: Joi.date().iso().greater('now').allow(null).optional(),
+});
+
 // ── Validation middleware factory ─────────────────────────────────────────────
 
 /**
@@ -330,5 +347,6 @@ module.exports = {
     broadcast,
     // Notifications
     registerDeviceToken,
+    notificationCampaignPayload,
   },
 };

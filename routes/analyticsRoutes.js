@@ -2,10 +2,13 @@ const express = require('express');
 const router = express.Router();
 const analyticsController = require('../controllers/analyticsController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { adminLimiter } = require('../middlewares/rateLimiter');
 
-// All analytics routes require a valid JWT and admin role
+// All analytics routes require a valid JWT and admin role. The rate limiter
+// is mounted after these so it can key by req.user._id — see rateLimiter.js.
 router.use(protect);
 router.use(restrictTo('admin'));
+router.use(adminLimiter);
 
 // GET /api/admin/analytics/overview    — dashboard KPIs
 // GET /api/admin/analytics/errands     — errand trends + charts

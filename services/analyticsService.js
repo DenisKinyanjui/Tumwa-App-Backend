@@ -284,25 +284,36 @@ const getOverview = async (since, to) => {
 
 // ── Errand analytics ──────────────────────────────────────────────────────────
 
-// Prefer the structured `location.pickupLocality` captured at booking time
-// (see CreateErrand.tsx's reverse-geocode → Errand.pickupLocality) — an
-// exact, case-insensitive match against an admin-managed zone name. Older
-// errands (booked before this existed) or ones whose geocoder didn't
-// resolve a locality fall back to fuzzy-matching the free-text
-// `location.address` for whichever zone name it contains, same as before.
-// Bucketing into "Other" only happens once both signals miss. Takes the
-// area name list explicitly (rather than querying inside) so callers that
-// already have it — e.g. locationController computing per-zone counts —
-// don't re-fetch it.
-const buildRegionExpr = (areaNames) => {
+// Prefer the structured `location.pickupLocality`/`deliveryLocality`
+// captured at booking time (see CreateErrand.tsx's reverse-geocode →
+// Errand.location) — an exact, case-insensitive match against an
+// admin-managed zone name. Older errands (booked before this existed) or
+// ones whose geocoder didn't resolve a locality fall back to fuzzy-matching
+// the relevant half of the free-text `location.address` — it's stored as
+// "From: {pickup} → To: {delivery}" (see CreateErrand.tsx), so the address
+// is split on that arrow and only the pickup-side or delivery-side half is
+// searched, matching `field`. Bucketing into "Other" only happens once both
+// signals miss. Takes the area name list explicitly (rather than querying
+// inside) so callers that already have it — e.g. locationController
+// computing per-zone counts — don't re-fetch it.
+const buildRegionExpr = (areaNames, field = 'pickup') => {
   if (areaNames.length === 0) {
     return { $ifNull: ['$location.address', 'Unknown'] };
   }
 
+  const localityField = field === 'delivery' ? '$location.deliveryLocality' : '$location.pickupLocality';
+  const addressHalfIndex = field === 'delivery' ? 1 : 0;
+  const addressHalf = {
+    $ifNull: [
+      { $arrayElemAt: [{ $split: [{ $ifNull: ['$location.address', ''] }, '→'] }, addressHalfIndex] },
+      '',
+    ],
+  };
+
   const exactLocalityBranches = areaNames.map((name) => ({
     case: {
       $eq: [
-        { $toLower: { $ifNull: ['$location.pickupLocality', ''] } },
+        { $toLower: { $ifNull: [localityField, ''] } },
         name.toLowerCase(),
       ],
     },
@@ -312,7 +323,7 @@ const buildRegionExpr = (areaNames) => {
   const addressSubstringBranches = areaNames.map((name) => ({
     case: {
       $regexMatch: {
-        input: { $ifNull: ['$location.address', ''] },
+        input: addressHalf,
         regex: escapeRegex(name),
         options: 'i',
       },
@@ -329,7 +340,7 @@ const buildRegionExpr = (areaNames) => {
 };
 
 const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
-  const { status, runner, amountMin, amountMax } = filters;
+  const { status, runner, amountMin, amountMax, locationField = 'pickup' } = filters;
 
   // Build base match for filtered queries
   const baseMatch = { createdAt: { $gte: since, $lte: to } };
@@ -344,7 +355,7 @@ const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
   // All areas regardless of status — a retired zone's historical errands
   // should still attribute to its name rather than fall into "Other".
   const areaNames = (await ServiceArea.find().select('name').lean()).map((a) => a.name);
-  const regionExpr = buildRegionExpr(areaNames);
+  const regionExpr = buildRegionExpr(areaNames, locationField);
 
   const [timeSeries, byStatus, topLocations, completionTrend] = await Promise.all([
     // Line chart — errands over time
@@ -464,7 +475,7 @@ const getErrandAnalytics = async (since, to, bucketFormat, filters = {}) => {
       },
       topLocations: {
         type: 'bar',
-        title: 'Top 10 Errand Regions',
+        title: locationField === 'delivery' ? 'Top 10 Delivery Regions' : 'Top 10 Pickup Regions',
         data: topLocations,
       },
       completionTrend: {

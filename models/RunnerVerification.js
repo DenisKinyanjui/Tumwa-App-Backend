@@ -46,7 +46,7 @@ const runnerVerificationSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
+      enum: ['pending', 'approved', 'rejected', 'resubmission_requested'],
       default: 'pending',
     },
     adminNotes: {
@@ -60,6 +60,33 @@ const runnerVerificationSchema = new mongoose.Schema(
     reviewedAt: {
       type: Date,
       default: null,
+    },
+    // Who made the current decision (approve/reject/request-resubmission) —
+    // distinct from the full audit trail below, so the UI can show "Approved
+    // by X" without walking the history array.
+    reviewedBy: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      name: { type: String, default: null },
+    },
+    // Full audit trail — one entry per decision/lifecycle event (submitted,
+    // approved, rejected, resubmission_requested, reopened). Appended to by
+    // the Identity Verification review flow (adminController.js); never
+    // rewritten, so it's a genuine history rather than a "last action" cache.
+    history: {
+      type: [
+        {
+          action: {
+            type: String,
+            enum: ['submitted', 'resubmitted', 'approved', 'rejected', 'resubmission_requested', 'reopened'],
+            required: true,
+          },
+          adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+          adminName: { type: String, default: null },
+          reason: { type: String, default: null },
+          at: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
     },
   },
   {

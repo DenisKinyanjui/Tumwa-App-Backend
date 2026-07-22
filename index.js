@@ -16,7 +16,7 @@ const {
   hppProtect,
   mpesaIpGuard,
 } = require('./middlewares/security');
-const { apiLimiter, adminLimiter } = require('./middlewares/rateLimiter');
+const { apiLimiter } = require('./middlewares/rateLimiter');
 const { BODY_LIMITS } = require('./config/security');
 
 // ── Route modules ─────────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ const locationRoutes = require('./routes/locationRoutes');
 
 const { initSocket } = require('./socket/socketManager');
 const { sweepExpiredReadonly } = require('./services/conversationService');
+const { runScheduledSweep: sweepScheduledNotifications } = require('./services/notificationCampaignService');
 
 // ── App setup ─────────────────────────────────────────────────────────────────
 const app = express();
@@ -112,10 +113,11 @@ app.use('/api/favorites', favoriteRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/locations', locationRoutes);
 
-// Admin routes — stricter rate limiter applied on top
-app.use('/api/admin', adminLimiter, adminRoutes);
-app.use('/api/admin/analytics', adminLimiter, analyticsRoutes);
-app.use('/api/admin/reports', adminLimiter, reportRoutes);
+// Admin routes — stricter, per-admin-user rate limiter applied inside each
+// router (after `protect`, so it can key by user ID — see rateLimiter.js)
+app.use('/api/admin', adminRoutes);
+app.use('/api/admin/analytics', analyticsRoutes);
+app.use('/api/admin/reports', reportRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
@@ -156,6 +158,10 @@ const PORT = process.env.PORT || 3000;
 let readonlySweepInterval = null;
 const READONLY_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
+// Sends any notification campaign whose scheduledAt has come due.
+let notificationSweepInterval = null;
+const NOTIFICATION_SWEEP_INTERVAL_MS = 60 * 1000; // every minute
+
 const start = async () => {
   try {
     // Connect MongoDB
@@ -170,6 +176,11 @@ const start = async () => {
 
     // Start the read-only-conversation sweep (see declaration above)
     readonlySweepInterval = setInterval(sweepExpiredReadonly, READONLY_SWEEP_INTERVAL_MS);
+
+    // Start the scheduled notification campaign sweep (see declaration above)
+    notificationSweepInterval = setInterval(() => {
+      sweepScheduledNotifications().catch((err) => logger.error('Notification sweep failed', { error: err.message }));
+    }, NOTIFICATION_SWEEP_INTERVAL_MS);
 
     httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`, {
@@ -194,6 +205,7 @@ const shutdown = async (signal) => {
   logger.info(`${signal} received — graceful shutdown started`);
 
   if (readonlySweepInterval) clearInterval(readonlySweepInterval);
+  if (notificationSweepInterval) clearInterval(notificationSweepInterval);
 
   // Stop accepting new connections
   httpServer.close(async () => {

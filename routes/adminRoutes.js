@@ -5,11 +5,16 @@ const disputeController = require('../controllers/disputeController');
 const legalController = require('../controllers/legalController');
 const settingsController = require('../controllers/settingsController');
 const locationController = require('../controllers/locationController');
+const notificationCampaignController = require('../controllers/notificationCampaignController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { adminLimiter } = require('../middlewares/rateLimiter');
+const { validate, schemas } = require('../middlewares/validator');
 
-// All admin routes require a valid JWT AND admin role
+// All admin routes require a valid JWT AND admin role. The rate limiter is
+// mounted after these so it can key by req.user._id — see rateLimiter.js.
 router.use(protect);
 router.use(restrictTo('admin'));
+router.use(adminLimiter);
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 router.get('/users', adminController.getUsers);
@@ -19,9 +24,12 @@ router.patch('/users/:id/working-capital', adminController.setWorkingCapitalLimi
 router.delete('/users/:id', adminController.deleteUser);
 
 // ── Runner Verifications ──────────────────────────────────────────────────────
+router.get('/verifications', adminController.listVerifications);
 router.get('/verifications/:userId', adminController.getVerification);
 router.patch('/verifications/:userId/approve', adminController.approveVerification);
 router.patch('/verifications/:userId/reject', adminController.rejectVerification);
+router.patch('/verifications/:userId/request-resubmission', adminController.requestResubmissionVerification);
+router.patch('/verifications/:userId/reopen', adminController.reopenVerification);
 
 // ── Errands ───────────────────────────────────────────────────────────────────
 router.get('/errands', adminController.getErrands);
@@ -61,5 +69,22 @@ router.get('/locations', locationController.adminList);
 router.post('/locations', locationController.adminCreate);
 router.patch('/locations/:id', locationController.adminUpdate);
 router.delete('/locations/:id', locationController.adminDelete);
+
+// ── Notification campaigns ────────────────────────────────────────────────────
+// Specific/static paths must come before ':id' so Express doesn't swallow them.
+router.get('/notification-campaigns/stats', notificationCampaignController.stats);
+router.get('/notification-campaigns/system-events', notificationCampaignController.systemEvents);
+router.get('/notification-campaigns/audience-count', notificationCampaignController.previewAudienceCount);
+router.post(
+  '/notification-campaigns/banner-image',
+  notificationCampaignController.uploadBannerMiddleware,
+  notificationCampaignController.uploadBanner,
+);
+router.get('/notification-campaigns', notificationCampaignController.list);
+router.post('/notification-campaigns', validate(schemas.notificationCampaignPayload), notificationCampaignController.create);
+router.get('/notification-campaigns/:id', notificationCampaignController.getOne);
+router.patch('/notification-campaigns/:id', validate(schemas.notificationCampaignPayload), notificationCampaignController.update);
+router.post('/notification-campaigns/:id/duplicate', notificationCampaignController.duplicate);
+router.delete('/notification-campaigns/:id', notificationCampaignController.remove);
 
 module.exports = router;

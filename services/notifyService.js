@@ -43,6 +43,7 @@ const send = async ({
       type,
       relatedId,
       relatedModel,
+      event: eventName,
     });
 
     // 2. Emit socket event — include notificationId so client can mark-read on tap
@@ -120,6 +121,7 @@ const sendToRole = async ({
       type,
       relatedId,
       relatedModel,
+      event: eventName,
     }));
 
     const inserted = await Notification.insertMany(docs, { ordered: false });

@@ -1,5 +1,16 @@
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const r2Service = require('../services/r2Service');
+
+// Most notifications have no banner — only resolve signed URLs for the ones
+// fanned out from an admin campaign with an image attached.
+const attachBannerUrls = async (notifications) => Promise.all(
+  notifications.map(async (n) => {
+    if (!n.bannerImageKey) return n;
+    const bannerImageUrl = await r2Service.getSignedDownloadUrl(n.bannerImageKey, 3600);
+    return { ...n, bannerImageUrl };
+  }),
+);
 
 // ─── GET /api/notifications ───────────────────────────────────────────────────
 // Returns the authenticated user's notifications, newest first.
@@ -15,10 +26,12 @@ exports.getNotifications = async (req, res) => {
   if (req.query.type) filter.type = req.query.type;
 
   const [notifications, total, unreadCount] = await Promise.all([
-    Notification.find(filter).sort('-createdAt').skip(skip).limit(limit),
+    Notification.find(filter).sort('-createdAt').skip(skip).limit(limit).lean(),
     Notification.countDocuments(filter),
     Notification.countDocuments({ user: req.user._id, isRead: false }),
   ]);
+
+  const withBanners = await attachBannerUrls(notifications);
 
   res.status(200).json({
     status: 'success',
@@ -29,7 +42,7 @@ exports.getNotifications = async (req, res) => {
       totalPages: Math.ceil(total / limit),
     },
     unreadCount,
-    data: { notifications },
+    data: { notifications: withBanners },
   });
 };
 

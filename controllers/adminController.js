@@ -86,12 +86,49 @@ exports.getUser = async (req, res) => {
     user.role === 'runner' ? RunnerVerification.findOne({ user: user._id }).lean() : null,
   ]);
 
-  const verification = await presignVerification(verificationDoc);
+  const verification = await presignVerification(verificationDoc, user.photoKey);
 
   res.status(200).json({
     status: 'success',
     data: { user, recentErrands, recentPayments, verification },
   });
+};
+
+// GET /api/admin/verifications
+// Work queue for the Identity Verification module — paginated, filterable by
+// status, each row carrying the runner's name/phone/avatar so the queue
+// table doesn't need N+1 lookups.
+exports.listVerifications = async (req, res) => {
+  const { page, limit, skip } = paginate(req.query);
+  const VALID_STATUSES = ['pending', 'approved', 'rejected', 'resubmission_requested'];
+
+  const filter = {};
+  if (req.query.status) {
+    if (!VALID_STATUSES.includes(req.query.status)) {
+      return res.status(400).json({ status: 'fail', message: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+    }
+    filter.status = req.query.status;
+  }
+
+  const [docs, total] = await Promise.all([
+    RunnerVerification.find(filter)
+      .populate('user', 'name phone photoKey')
+      .sort({ submittedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    RunnerVerification.countDocuments(filter),
+  ]);
+
+  const verifications = await Promise.all(
+    docs.map(async (doc) => {
+      const { user, ...rest } = doc;
+      const presigned = await presignVerification(rest, user?.photoKey);
+      return { ...presigned, user: user ? { _id: user._id, name: user.name, phone: user.phone } : null };
+    }),
+  );
+
+  paginatedResponse(res, { verifications }, total, page, limit);
 };
 
 // GET /api/admin/verifications/:userId
@@ -102,7 +139,8 @@ exports.getVerification = async (req, res) => {
   if (!verificationDoc) {
     return res.status(404).json({ status: 'fail', message: 'No verification submission found' });
   }
-  const verification = await presignVerification(verificationDoc);
+  const runnerUser = await User.findById(req.params.userId).select('photoKey').lean();
+  const verification = await presignVerification(verificationDoc, runnerUser?.photoKey);
   res.status(200).json({ status: 'success', data: { verification } });
 };
 
@@ -121,9 +159,18 @@ exports.approveVerification = async (req, res) => {
     }
   }
 
+  const reviewedBy = { id: req.user._id, name: req.user.name };
+  const historyEntry = { action: 'approved', adminId: req.user._id, adminName: req.user.name, reason: notes || null, at: new Date() };
+
   const verificationDoc = await RunnerVerification.findOneAndUpdate(
     { user: req.params.userId },
-    { status: 'approved', adminNotes: notes || null, reviewedAt: new Date() },
+    {
+      status: 'approved',
+      adminNotes: notes || null,
+      reviewedAt: new Date(),
+      reviewedBy,
+      $push: { history: historyEntry },
+    },
     { new: true, upsert: true, setDefaultsOnInsert: true },
   ).lean();
 
@@ -152,9 +199,19 @@ exports.rejectVerification = async (req, res) => {
   if (!notes || !notes.trim()) {
     return res.status(400).json({ status: 'fail', message: 'Admin notes are required when rejecting.' });
   }
+
+  const reviewedBy = { id: req.user._id, name: req.user.name };
+  const historyEntry = { action: 'rejected', adminId: req.user._id, adminName: req.user.name, reason: notes.trim(), at: new Date() };
+
   const verificationDoc = await RunnerVerification.findOneAndUpdate(
     { user: req.params.userId },
-    { status: 'rejected', adminNotes: notes.trim(), reviewedAt: new Date() },
+    {
+      status: 'rejected',
+      adminNotes: notes.trim(),
+      reviewedAt: new Date(),
+      reviewedBy,
+      $push: { history: historyEntry },
+    },
     { new: true },
   ).lean();
   if (!verificationDoc) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
@@ -175,6 +232,77 @@ exports.rejectVerification = async (req, res) => {
   });
 
   logger.info('Runner verification rejected', { userId: req.params.userId, adminId: req.user._id });
+  res.status(200).json({ status: 'success', data: { verification } });
+};
+
+// PATCH /api/admin/verifications/:userId/request-resubmission
+// A softer disposition than reject — tells the runner specifically what to
+// fix (blurry photo, mismatched ID, etc.) without a hard rejection.
+exports.requestResubmissionVerification = async (req, res) => {
+  const { reason } = req.body;
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ status: 'fail', message: 'A reason is required when requesting resubmission.' });
+  }
+
+  const reviewedBy = { id: req.user._id, name: req.user.name };
+  const historyEntry = { action: 'resubmission_requested', adminId: req.user._id, adminName: req.user.name, reason: reason.trim(), at: new Date() };
+
+  const verificationDoc = await RunnerVerification.findOneAndUpdate(
+    { user: req.params.userId },
+    {
+      status: 'resubmission_requested',
+      adminNotes: reason.trim(),
+      reviewedAt: new Date(),
+      reviewedBy,
+      $push: { history: historyEntry },
+    },
+    { new: true },
+  ).lean();
+  if (!verificationDoc) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+
+  await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'rejected' });
+
+  const verification = await presignVerification(verificationDoc);
+
+  notify.send({
+    userId: req.params.userId,
+    title: 'Resubmission Requested',
+    message: `Please resubmit your identity documents: ${reason.trim()}`,
+    type: 'admin',
+    relatedId: req.params.userId,
+    relatedModel: 'User',
+    eventName: 'verification-status-changed',
+    eventData: { status: 'resubmission_requested', reason: reason.trim() },
+  });
+
+  logger.info('Runner verification resubmission requested', { userId: req.params.userId, adminId: req.user._id });
+  res.status(200).json({ status: 'success', data: { verification } });
+};
+
+// PATCH /api/admin/verifications/:userId/reopen
+// Moves a decided (approved/rejected/resubmission_requested) verification
+// back to pending for re-review, instead of letting an admin silently flip
+// the decision in place — preserves a proper audit trail (see history).
+exports.reopenVerification = async (req, res) => {
+  const existing = await RunnerVerification.findOne({ user: req.params.userId });
+  if (!existing) return res.status(404).json({ status: 'fail', message: 'Verification not found' });
+  if (existing.status === 'pending') {
+    return res.status(400).json({ status: 'fail', message: 'Verification is already pending review.' });
+  }
+
+  const historyEntry = { action: 'reopened', adminId: req.user._id, adminName: req.user.name, reason: req.body.reason || null, at: new Date() };
+
+  const verificationDoc = await RunnerVerification.findOneAndUpdate(
+    { user: req.params.userId },
+    { status: 'pending', $push: { history: historyEntry } },
+    { new: true },
+  ).lean();
+
+  await User.findByIdAndUpdate(req.params.userId, { verificationStatus: 'pending' });
+
+  const verification = await presignVerification(verificationDoc);
+
+  logger.info('Runner verification reopened', { userId: req.params.userId, adminId: req.user._id });
   res.status(200).json({ status: 'success', data: { verification } });
 };
 

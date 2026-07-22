@@ -49,6 +49,12 @@ exports.errands = async (req, res) => {
     filters.status = req.query.status;
   }
   if (req.query.runner) filters.runner = req.query.runner;
+  if (req.query.locationField) {
+    if (!['pickup', 'delivery'].includes(req.query.locationField)) {
+      return res.status(400).json({ status: 'fail', message: 'locationField must be one of: pickup, delivery' });
+    }
+    filters.locationField = req.query.locationField;
+  }
   if (req.query.amountMin) {
     const n = parseFloat(req.query.amountMin);
     if (isNaN(n)) return res.status(400).json({ status: 'fail', message: 'amountMin must be a number' });
