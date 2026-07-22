@@ -23,7 +23,7 @@ const notificationSchema = new mongoose.Schema(
       type: String,
       enum: {
         values: [
-          'errand', 'payment', 'dispute', 'rating', 'admin', 'system', 'message',
+          'errand', 'payment', 'dispute', 'rating', 'admin', 'system', 'message', 'support',
           // Admin-composed broadcast campaign types (see NotificationCampaign)
           'promotion', 'announcement', 'reminder',
         ],
@@ -42,7 +42,7 @@ const notificationSchema = new mongoose.Schema(
     },
     relatedModel: {
       type: String,
-      enum: ['Errand', 'Payment', 'Dispute', 'User', 'Conversation', null],
+      enum: ['Errand', 'Payment', 'Dispute', 'User', 'Conversation', 'SupportConversation', null],
       default: null,
     },
     // The notifyService eventName that produced this notification (e.g.

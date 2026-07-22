@@ -13,8 +13,8 @@ router.get('/', disputeController.getDisputes);
 router.get('/:id', disputeController.getDispute);
 
 // Admin-only actions
-router.patch('/:id/review',  restrictTo('admin'), disputeController.reviewDispute);
-router.patch('/:id/resolve', restrictTo('admin'), disputeController.resolveDispute);
-router.patch('/:id/reject',  restrictTo('admin'), disputeController.rejectDispute);
+router.patch('/:id/review',  restrictTo('admin', 'superadmin'), disputeController.reviewDispute);
+router.patch('/:id/resolve', restrictTo('admin', 'superadmin'), disputeController.resolveDispute);
+router.patch('/:id/reject',  restrictTo('admin', 'superadmin'), disputeController.rejectDispute);
 
 module.exports = router;

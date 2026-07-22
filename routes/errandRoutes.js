@@ -13,9 +13,9 @@ router.get('/:id', errandController.getErrand);
 
 // ─── Customer ────────────────────────────────────────────────────────────────
 // Errands are created by the STK callback after payment — direct creation is admin-only
-router.post('/', restrictTo('admin'), errandController.createErrand);
-router.patch('/:id/cancel',  restrictTo('customer', 'admin'), errandController.cancelErrand);
-router.patch('/:id/dispute', restrictTo('customer', 'admin'), errandController.disputeErrand);
+router.post('/', restrictTo('admin', 'superadmin'), errandController.createErrand);
+router.patch('/:id/cancel',  restrictTo('customer', 'admin', 'superadmin'), errandController.cancelErrand);
+router.patch('/:id/dispute', restrictTo('customer', 'admin', 'superadmin'), errandController.disputeErrand);
 router.patch('/:id/confirm', restrictTo('customer'),          errandController.confirmDelivery);
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ router.patch(
 router.post('/:id/retry-match', restrictTo('customer'), errandController.retryMatch);
 
 // ─── Admin ───────────────────────────────────────────────────────────────────
-router.patch('/:id/admin-assign', restrictTo('admin'), errandController.adminAssignRunner);
-router.patch('/:id/excuse-cancellation', restrictTo('admin'), errandController.excuseCancellation);
+router.patch('/:id/admin-assign', restrictTo('admin', 'superadmin'), errandController.adminAssignRunner);
+router.patch('/:id/excuse-cancellation', restrictTo('admin', 'superadmin'), errandController.excuseCancellation);
 
 module.exports = router;

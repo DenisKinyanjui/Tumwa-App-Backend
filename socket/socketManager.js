@@ -2,6 +2,8 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Conversation = require('../models/Conversation');
+const SupportConversation = require('../models/SupportConversation');
+const supportService = require('../services/supportService');
 const logger = require('../utils/logger');
 const { isWithinRadius } = require('../utils/distanceCalculator');
 
@@ -25,6 +27,14 @@ let io;
  *   chat:read       → user:{otherParticipantId}  (their message was read)
  *   chat:typing     → errand:{errandId} room  (broadcast, ephemeral)
  *   chat:presence   → user:{otherParticipantId} (join/leave online-state changes)
+ *
+ *   support:{conversationId} — room for a support conversation, joined via support:join.
+ *   support:new-message         → support:{id} room + user:{requesterId} + user:{assignedAdmin}
+ *   support:conversation-updated→ admins room + user:{requesterId}
+ *   support:new-conversation    → admins room
+ *   support:user-typing/-stop-typing → support:{id} room (broadcast, ephemeral)
+ *   support:message-read        → user:{otherPartyId}
+ *   support:presence            → admins room (customer/runner connect/disconnect)
  */
 
 const initSocket = (httpServer) => {
@@ -71,7 +81,19 @@ const initSocket = (httpServer) => {
     const { _id, name, role } = socket.user;
 
     socket.join(`user:${_id}`);
-    socket.join(`${role}s`); // 'runners', 'admins', 'customers'
+    socket.join(`${role}s`); // 'runners', 'admins', 'customers', 'superadmins'
+    // Superadmins are a superset of admin — they must receive everything
+    // broadcast to the 'admins' room (disputes, verifications, support)
+    // without every emitToRoom('admins', ...) call site needing to know
+    // superadmin exists as a separate role.
+    if (role === 'superadmin') socket.join('admins');
+
+    // Lets the admin panel show a live online dot next to every conversation
+    // in the Support inbox list, not just the one currently open — mirrors
+    // chat:presence's single-recipient version but broadcasts to all staff.
+    if (role === 'customer' || role === 'runner') {
+      emitToRoom('admins', 'support:presence', { userId: _id.toString(), online: true });
+    }
 
     logger.info(`[Socket] connected  | ${name} (${role}) | socketId: ${socket.id}`);
 
@@ -197,8 +219,66 @@ const initSocket = (httpServer) => {
       });
     });
 
+    // ── Support ───────────────────────────────────────────────────────────────
+    const isStaffRole = role === 'admin' || role === 'superadmin';
+
+    socket.on('support:join', async ({ conversationId }) => {
+      if (!conversationId) return;
+      try {
+        if (!isStaffRole) {
+          const conversation = await SupportConversation.findById(conversationId).select('requesterId');
+          if (!conversation || conversation.requesterId.toString() !== _id.toString()) return;
+        }
+        socket.join(`support:${conversationId}`);
+      } catch (err) {
+        logger.error('[Socket] support:join failed', { error: err.message });
+      }
+    });
+
+    socket.on('support:leave', ({ conversationId }) => {
+      if (!conversationId) return;
+      socket.leave(`support:${conversationId}`);
+    });
+
+    // Alternative low-latency path to REST POST /support(/conversations)/:id/messages —
+    // shares supportService.addMessage so persistence never happens twice.
+    socket.on('support:send-message', async ({ conversationId, text }) => {
+      if (!conversationId || !text || !text.trim()) return;
+      try {
+        const conversation = await SupportConversation.findById(conversationId);
+        if (!conversation) return;
+        if (!isStaffRole && conversation.requesterId.toString() !== _id.toString()) return;
+
+        const message = await supportService.addMessage({
+          conversation,
+          sender: socket.user,
+          text: text.trim(),
+        });
+
+        emitSupportMessage(conversation, message);
+        emitSupportConversationUpdated(conversation);
+      } catch (err) {
+        logger.error('[Socket] support:send-message failed', { error: err.message });
+      }
+    });
+
+    socket.on('support:typing', ({ conversationId }) => {
+      if (!conversationId) return;
+      socket.to(`support:${conversationId}`).emit('support:user-typing', { conversationId, userId: _id });
+    });
+
+    socket.on('support:stop-typing', ({ conversationId }) => {
+      if (!conversationId) return;
+      socket.to(`support:${conversationId}`).emit('support:user-stop-typing', { conversationId, userId: _id });
+    });
+
     socket.on('disconnect', (reason) => {
       logger.info(`[Socket] disconnected | ${name} (${role}) | reason: ${reason}`);
+
+      if (role === 'customer' || role === 'runner') {
+        emitToRoom('admins', 'support:presence', { userId: _id.toString(), online: false });
+      }
+
       // Mark runner offline so they are excluded from future matching queries
       if (role === 'runner') {
         User.findByIdAndUpdate(_id, {
@@ -444,6 +524,48 @@ const emitChatRead = (conversation, { readerId, readAt }) => {
   emitToUser(otherId.toString(), 'chat:read', { conversationId: conversation._id, readerId, readAt });
 };
 
+// ── Support helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Emit a new support message to the conversation room (for anyone with it
+ * open) plus targeted personal rooms so it's delivered even if neither side
+ * has the thread open — same reasoning as emitChatMessage.
+ */
+const emitSupportMessage = (conversation, message) => {
+  const payload = { conversationId: conversation._id, message };
+  emitToRoom(`support:${conversation._id}`, 'support:new-message', payload);
+  emitToUser(conversation.requesterId.toString(), 'support:new-message', payload);
+  if (conversation.assignedAdmin) {
+    emitToUser(conversation.assignedAdmin.toString(), 'support:new-message', payload);
+  }
+};
+
+/**
+ * Signal that conversation metadata changed (status/priority/assignment/new
+ * message) — admin inbox list re-sorts/re-renders, requester's badge updates.
+ */
+const emitSupportConversationUpdated = (conversation) => {
+  emitToRoom('admins', 'support:conversation-updated', { conversation });
+  emitToUser(conversation.requesterId.toString(), 'support:conversation-updated', { conversation });
+};
+
+/** Broadcast a brand-new support conversation to all connected admin staff. */
+const emitSupportNewConversation = (conversation) => {
+  emitToRoom('admins', 'support:new-conversation', { conversation });
+};
+
+/** Emit a read receipt to the other side of a support conversation. */
+const emitSupportMessageRead = (conversation, { readerId, readAt, readerIsStaff }) => {
+  const otherId = readerIsStaff ? conversation.requesterId : conversation.assignedAdmin;
+  if (otherId) {
+    emitToUser(otherId.toString(), 'support:message-read', {
+      conversationId: conversation._id,
+      readerId,
+      readAt,
+    });
+  }
+};
+
 module.exports = {
   initSocket,
   getIO,
@@ -464,4 +586,8 @@ module.exports = {
   emitDisputeResolved,
   emitChatMessage,
   emitChatRead,
+  emitSupportMessage,
+  emitSupportConversationUpdated,
+  emitSupportNewConversation,
+  emitSupportMessageRead,
 };

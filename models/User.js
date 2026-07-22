@@ -42,8 +42,8 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: {
-        values: ['customer', 'runner', 'admin'],
-        message: 'Role must be customer, runner, or admin',
+        values: ['customer', 'runner', 'admin', 'superadmin'],
+        message: 'Role must be customer, runner, admin, or superadmin',
       },
       default: 'customer',
     },

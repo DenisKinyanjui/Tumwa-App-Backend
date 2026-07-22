@@ -36,6 +36,7 @@ const profileRoutes = require('./routes/profileRoutes');
 const addressRoutes = require('./routes/addressRoutes');
 const favoriteRoutes = require('./routes/favoriteRoutes');
 const conversationRoutes = require('./routes/conversationRoutes');
+const supportRoutes = require('./routes/supportRoutes');
 const locationRoutes = require('./routes/locationRoutes');
 const mobileAnnouncementRoutes = require('./routes/mobileAnnouncementRoutes');
 
@@ -113,6 +114,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/favorites', favoriteRoutes);
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/support', supportRoutes);
 app.use('/api/locations', locationRoutes);
 app.use('/api/mobile/announcements', mobileAnnouncementRoutes);
 

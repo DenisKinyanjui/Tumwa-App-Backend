@@ -14,7 +14,7 @@ const { validate, schemas } = require('../middlewares/validator');
 // All admin routes require a valid JWT AND admin role. The rate limiter is
 // mounted after these so it can key by req.user._id — see rateLimiter.js.
 router.use(protect);
-router.use(restrictTo('admin'));
+router.use(restrictTo('admin', 'superadmin'));
 router.use(adminLimiter);
 
 // ── Users ─────────────────────────────────────────────────────────────────────
