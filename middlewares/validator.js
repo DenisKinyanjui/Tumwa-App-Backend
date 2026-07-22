@@ -262,6 +262,60 @@ const notificationCampaignPayload = Joi.object({
   scheduledAt: Joi.date().iso().greater('now').allow(null).optional(),
 });
 
+// ── Announcement schemas (admin, in-app modal/banner/bottom-sheet) ───────────
+
+const announcementPayload = Joi.object({
+  title: Joi.string().trim().min(1).max(100).required(),
+  subtitle: Joi.string().trim().max(150).allow(null, '').optional(),
+  description: Joi.string().trim().min(1).max(1000).required(),
+  image: Joi.string().trim().max(500).allow(null, '').optional(),
+  type: Joi.string().valid('modal', 'top_banner', 'bottom_sheet').required(),
+
+  targetAudience: Joi.string().valid(
+    'everyone', 'customers', 'runners', 'verified_runners', 'unverified_runners',
+    'active_runners', 'suspended_runners', 'selected_locations', 'selected_users',
+  ).required(),
+  selectedUsers: Joi.array().items(fields.objectId).when('targetAudience', {
+    is: 'selected_users',
+    then: Joi.array().min(1).required().messages({ 'array.min': 'Select at least one user' }),
+    otherwise: Joi.array().max(0).optional(),
+  }),
+  selectedLocations: Joi.array().items(fields.objectId).when('targetAudience', {
+    is: 'selected_locations',
+    then: Joi.array().min(1).required().messages({ 'array.min': 'Select at least one location' }),
+    otherwise: Joi.array().max(0).optional(),
+  }),
+
+  triggers: Joi.array().items(Joi.string().valid(
+    'app_launch', 'login_success', 'dashboard_open', 'first_login',
+    'errand_accepted', 'errand_completed', 'verification_approved', 'withdrawal_approved',
+    'manual_trigger', 'custom_event',
+  )).min(1).required().messages({ 'array.min': 'Select at least one trigger' }),
+  customEventName: Joi.string().trim().max(100).allow(null, '').optional(),
+
+  primaryButtonText: Joi.string().trim().max(40).allow(null, '').optional(),
+  secondaryButtonText: Joi.string().trim().max(40).allow(null, '').optional(),
+  primaryAction: Joi.string().valid('close', 'external_url', 'internal_screen', 'contact_support').required(),
+  actionTarget: Joi.string().trim().max(500).when('primaryAction', {
+    is: Joi.valid('external_url', 'internal_screen'),
+    then: Joi.required(),
+    otherwise: Joi.allow(null, '').optional(),
+  }),
+
+  priority: Joi.string().valid('low', 'normal', 'high', 'critical').required(),
+  displayFrequency: Joi.string().valid(
+    'once_ever', 'once_per_version', 'once_per_session', 'every_trigger', 'until_dismissed',
+  ).required(),
+
+  startDate: Joi.date().iso().required(),
+  endDate: Joi.date().iso().greater(Joi.ref('startDate')).required().messages({
+    'date.greater': 'End date must be after the start date',
+  }),
+
+  // Whether to publish immediately after saving (maps to Announcement.active)
+  activate: Joi.boolean().optional(),
+});
+
 // ── Validation middleware factory ─────────────────────────────────────────────
 
 /**
@@ -348,5 +402,6 @@ module.exports = {
     // Notifications
     registerDeviceToken,
     notificationCampaignPayload,
+    announcementPayload,
   },
 };

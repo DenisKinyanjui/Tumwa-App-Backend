@@ -37,10 +37,12 @@ const addressRoutes = require('./routes/addressRoutes');
 const favoriteRoutes = require('./routes/favoriteRoutes');
 const conversationRoutes = require('./routes/conversationRoutes');
 const locationRoutes = require('./routes/locationRoutes');
+const mobileAnnouncementRoutes = require('./routes/mobileAnnouncementRoutes');
 
 const { initSocket } = require('./socket/socketManager');
 const { sweepExpiredReadonly } = require('./services/conversationService');
 const { runScheduledSweep: sweepScheduledNotifications } = require('./services/notificationCampaignService');
+const { runActivationSweep: sweepAnnouncementActivations } = require('./services/announcementService');
 
 // ── App setup ─────────────────────────────────────────────────────────────────
 const app = express();
@@ -112,6 +114,7 @@ app.use('/api/addresses', addressRoutes);
 app.use('/api/favorites', favoriteRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/locations', locationRoutes);
+app.use('/api/mobile/announcements', mobileAnnouncementRoutes);
 
 // Admin routes — stricter, per-admin-user rate limiter applied inside each
 // router (after `protect`, so it can key by user ID — see rateLimiter.js)
@@ -162,6 +165,11 @@ const READONLY_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
 let notificationSweepInterval = null;
 const NOTIFICATION_SWEEP_INTERVAL_MS = 60 * 1000; // every minute
 
+// Emits 'announcement:new' for scheduled announcements crossing into their
+// active window while users are already online.
+let announcementSweepInterval = null;
+const ANNOUNCEMENT_SWEEP_INTERVAL_MS = 60 * 1000; // every minute
+
 const start = async () => {
   try {
     // Connect MongoDB
@@ -181,6 +189,11 @@ const start = async () => {
     notificationSweepInterval = setInterval(() => {
       sweepScheduledNotifications().catch((err) => logger.error('Notification sweep failed', { error: err.message }));
     }, NOTIFICATION_SWEEP_INTERVAL_MS);
+
+    // Start the announcement activation sweep (see declaration above)
+    announcementSweepInterval = setInterval(() => {
+      sweepAnnouncementActivations().catch((err) => logger.error('Announcement activation sweep failed', { error: err.message }));
+    }, ANNOUNCEMENT_SWEEP_INTERVAL_MS);
 
     httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`, {
@@ -206,6 +219,7 @@ const shutdown = async (signal) => {
 
   if (readonlySweepInterval) clearInterval(readonlySweepInterval);
   if (notificationSweepInterval) clearInterval(notificationSweepInterval);
+  if (announcementSweepInterval) clearInterval(announcementSweepInterval);
 
   // Stop accepting new connections
   httpServer.close(async () => {

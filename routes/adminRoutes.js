@@ -6,6 +6,7 @@ const legalController = require('../controllers/legalController');
 const settingsController = require('../controllers/settingsController');
 const locationController = require('../controllers/locationController');
 const notificationCampaignController = require('../controllers/notificationCampaignController');
+const announcementController = require('../controllers/announcementController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 const { adminLimiter } = require('../middlewares/rateLimiter');
 const { validate, schemas } = require('../middlewares/validator');
@@ -86,5 +87,22 @@ router.get('/notification-campaigns/:id', notificationCampaignController.getOne)
 router.patch('/notification-campaigns/:id', validate(schemas.notificationCampaignPayload), notificationCampaignController.update);
 router.post('/notification-campaigns/:id/duplicate', notificationCampaignController.duplicate);
 router.delete('/notification-campaigns/:id', notificationCampaignController.remove);
+
+// ── Announcements (in-app modal/banner/bottom-sheet — separate from push) ────
+// Specific/static paths must come before ':id' so Express doesn't swallow them.
+router.post(
+  '/announcements/image',
+  announcementController.uploadImageMiddleware,
+  announcementController.uploadImage,
+);
+router.get('/announcements', announcementController.list);
+router.post('/announcements', validate(schemas.announcementPayload), announcementController.create);
+router.get('/announcements/:id', announcementController.getOne);
+router.put('/announcements/:id', validate(schemas.announcementPayload), announcementController.update);
+router.delete('/announcements/:id', announcementController.remove);
+router.patch('/announcements/:id/activate', announcementController.activate);
+router.patch('/announcements/:id/deactivate', announcementController.deactivate);
+router.post('/announcements/:id/duplicate', announcementController.duplicate);
+router.get('/announcements/:id/analytics', announcementController.analytics);
 
 module.exports = router;
